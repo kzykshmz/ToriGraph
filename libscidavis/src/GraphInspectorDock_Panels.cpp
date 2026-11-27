@@ -1596,39 +1596,41 @@ QWidget *GraphInspectorDock::buildCurveInspector()
 
                 const auto targetType =
                         static_cast<Graph::CurveType>(d_combo_curve_style->itemData(idx).toInt());
+                if (!Graph::canConvertTo(cv, targetType)) {
+                    syncCurveControls();
+                    return;
+                }
                 const QString before = d_target_ml->captureUndoSnapshot();
                 const QPen savedPen = cv->pen();
                 const QwtSymbol savedSym = cv->symbol();
                 const int savedYAxis = cv->yAxis();
 
                 int resolvedCi = ci;
-                if (Graph::canConvertTo(cv, targetType)) {
-                    if (d_app)
-                        d_app->invalidateModelessGraphDialogs(d_target_ml);
-                    int ebBefore = 0;
-                    if (DataCurve *dc = dynamic_cast<DataCurve *>(cv)) {
-                        const int oldType = g->curveType(ci);
-                        const bool barTransition =
-                                ((targetType == Graph::VerticalBars
-                                  || targetType == Graph::HorizontalBars)
-                                 != (oldType == Graph::VerticalBars
-                                     || oldType == Graph::HorizontalBars));
-                        if (barTransition) {
-                            for (DataCurve *eb : dc->errorBarsList()) {
-                                const int ebi = g->curveIndex(eb);
-                                if (ebi >= 0 && ebi < ci)
-                                    ++ebBefore;
-                            }
+                if (d_app)
+                    d_app->invalidateModelessGraphDialogs(d_target_ml);
+                int ebBefore = 0;
+                if (DataCurve *dc = dynamic_cast<DataCurve *>(cv)) {
+                    const int oldType = g->curveType(ci);
+                    const bool barTransition =
+                            ((targetType == Graph::VerticalBars
+                              || targetType == Graph::HorizontalBars)
+                             != (oldType == Graph::VerticalBars
+                                 || oldType == Graph::HorizontalBars));
+                    if (barTransition) {
+                        for (DataCurve *eb : dc->errorBarsList()) {
+                            const int ebi = g->curveIndex(eb);
+                            if (ebi >= 0 && ebi < ci)
+                                ++ebBefore;
                         }
                     }
-                    g->setCurveType(ci, targetType, true);
-                    resolvedCi = qBound(0, ci - ebBefore, qMax(0, g->curves() - 1));
-                    Graph::GraphSelection sel;
-                    sel.kind = Graph::GraphSelection::Curve;
-                    sel.primaryId = resolvedCi;
-                    g->setCurrentSelection(sel, false);
-                    cv = g->curve(resolvedCi);
                 }
+                g->setCurveType(ci, targetType, true);
+                resolvedCi = qBound(0, ci - ebBefore, qMax(0, g->curves() - 1));
+                Graph::GraphSelection sel;
+                sel.kind = Graph::GraphSelection::Curve;
+                sel.primaryId = resolvedCi;
+                g->setCurrentSelection(sel, false);
+                cv = g->curve(resolvedCi);
                 if (cv) {
                     cv->setYAxis(savedYAxis);
                     const bool usesLine =
@@ -1811,10 +1813,22 @@ QWidget *GraphInspectorDock::buildCurveInspector()
                 QPen lp = cv->pen();
                 lp.setStyle(ps);
                 cv->setPen(lp);
-                if (ps == Qt::NoPen)
-                    cv->setStyle(QwtPlotCurve::NoCurve);
-                else if (cv->style() == QwtPlotCurve::NoCurve)
-                    cv->setStyle(QwtPlotCurve::Lines);
+                const int ctype = g->curveType(ci);
+                const bool isVectorCurve =
+                        (ctype == Graph::VectXYXY || ctype == Graph::VectXYAM);
+                if (!isVectorCurve) {
+                    if (ps == Qt::NoPen) {
+                        if (cv->style() == QwtPlotCurve::Lines)
+                            cv->setStyle(QwtPlotCurve::NoCurve);
+                    } else if (cv->style() == QwtPlotCurve::NoCurve) {
+                        if (ctype == Graph::HorizontalSteps || ctype == Graph::VerticalSteps)
+                            cv->setStyle(QwtPlotCurve::Steps);
+                        else if (ctype == Graph::VerticalDropLines)
+                            cv->setStyle(QwtPlotCurve::Sticks);
+                        else
+                            cv->setStyle(QwtPlotCurve::Lines);
+                    }
+                }
                 g->updatePlot();
                 emit g->modifiedGraph();
                 d_target_ml->pushUndoSnapshot(tr("Change Line Pen Style"), before);

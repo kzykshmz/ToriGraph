@@ -622,13 +622,23 @@ bool insertSlideIds(QByteArray &presXml, const QVector<QPair<quint32, QString>> 
     QVector<QPair<QString, QString>> stack; // (namespace, local name)
     QVector<Tag *> open; // Tag objects of the open elements (or nullptr)
     qint64 before = 0;
+    auto findTagStart = [&](qint64 prevOff, qint64 endOff) -> int {
+        int searchFrom = int(prevOff);
+        if (searchFrom > 0 && searchFrom <= s.size() && s.at(searchFrom - 1) == QLatin1Char('<'))
+            --searchFrom;
+        const int pos = s.indexOf(QLatin1Char('<'), searchFrom);
+        return (pos >= 0 && pos < int(endOff)) ? pos : -1;
+    };
     while (!r.atEnd()) {
         r.readNext();
-        // whitespace before an element is not always reported as its own token (prolog)
-        const int tokStart = s.indexOf(QLatin1Char('<'), int(before));
         const int tokEnd = int(r.characterOffset());
+        const int tokStart = (r.isStartElement() || r.isEndElement())
+                ? findTagStart(before, tokEnd)
+                : -1;
         before = r.characterOffset();
         if (r.isStartElement()) {
+            if (tokStart < 0)
+                continue;
             const QString ns = r.namespaceUri().toString();
             const QString n = r.name().toString();
             Tag t;
@@ -843,9 +853,19 @@ bool addContentTypeOverrides(QByteArray &ctXml, const QVector<QPair<QString, QSt
     QString prefix;
     int rootEndTag = -1, depth = 0;
     qint64 before = 0;
+    auto findTagStart = [&](qint64 prevOff, qint64 endOff) -> int {
+        int searchFrom = int(prevOff);
+        if (searchFrom > 0 && searchFrom <= s.size() && s.at(searchFrom - 1) == QLatin1Char('<'))
+            --searchFrom;
+        const int pos = s.indexOf(QLatin1Char('<'), searchFrom);
+        return (pos >= 0 && pos < int(endOff)) ? pos : -1;
+    };
     while (!r.atEnd()) {
         r.readNext();
-        const int tokStart = s.indexOf(QLatin1Char('<'), int(before));
+        const int tokEnd = int(r.characterOffset());
+        const int tokStart = (r.isStartElement() || r.isEndElement())
+                ? findTagStart(before, tokEnd)
+                : -1;
         before = r.characterOffset();
         if (r.isStartElement()) {
             if (depth == 0)
@@ -1257,12 +1277,31 @@ DeckResult writeDeck(const QString &path, const QVector<SlideItem> &items, const
                                 .arg(zerr);
             return res;
         }
+        constexpr int kMaxPptxEntries = 4096;
+        constexpr quint64 kMaxPptxTotalBytes = 256ULL * 1024ULL * 1024ULL;
+        if (zip.entries().size() > kMaxPptxEntries) {
+            res.error = T("The existing PowerPoint file contains too many archive entries.");
+            return res;
+        }
+        quint64 totalExtracted = 0;
         for (int i = 0; i < zip.entries().size(); ++i) {
+            const quint64 declared = zip.entries().at(i).uncompSize;
+            if (declared > kMaxPptxTotalBytes || totalExtracted > kMaxPptxTotalBytes - declared) {
+                res.error = T("The existing PowerPoint file exceeds the maximum allowed "
+                              "decompressed size (256 MB).");
+                return res;
+            }
             QByteArray data;
             if (!zip.extract(i, data, &zerr)) {
                 res.error = T("The existing file could not be opened as a PowerPoint file (it "
                               "may be damaged or protected with a password).\n\nDetails: %1")
                                     .arg(zerr);
+                return res;
+            }
+            totalExtracted += static_cast<quint64>(data.size());
+            if (totalExtracted > kMaxPptxTotalBytes) {
+                res.error = T("The existing PowerPoint file exceeds the maximum allowed "
+                              "decompressed size (256 MB).");
                 return res;
             }
             pkg.set(zip.entries().at(i).name, data);

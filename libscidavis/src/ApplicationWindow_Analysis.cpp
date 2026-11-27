@@ -777,21 +777,21 @@ void ApplicationWindow::analyzeCurve(Graph *g, const QString &whichFit, const QS
 {
     if (whichFit == "fitLinear" || whichFit == "fitApparentLinear" || whichFit == "fitSigmoidal"
         || whichFit == "fitGauss" || whichFit == "fitLorentz") {
-        Fit *fitter = 0;
+        std::unique_ptr<Fit> fitter;
         if (whichFit == "fitLinear")
-            fitter = new LinearFit(this, g);
+            fitter.reset(new LinearFit(this, g));
         else if (whichFit == "fitApparentLinear") {
             LinearFit *lf = new LinearFit(this, g);
             lf->setApparentFit(true);
-            fitter = lf;
+            fitter.reset(lf);
         } else if (whichFit == "fitSigmoidal")
-            fitter = new SigmoidalFit(this, g);
+            fitter.reset(new SigmoidalFit(this, g));
         else if (whichFit == "fitGauss")
-            fitter = new GaussFit(this, g);
+            fitter.reset(new GaussFit(this, g));
         else if (whichFit == "fitLorentz")
-            fitter = new LorentzFit(this, g);
+            fitter.reset(new LorentzFit(this, g));
 
-        if (fitter->setDataFromCurve(curveTitle)) {
+        if (fitter && fitter->setDataFromCurve(curveTitle)) {
             if (whichFit != "fitLinear" && whichFit != "fitApparentLinear")
                 fitter->guessInitialValues();
 
@@ -825,7 +825,6 @@ void ApplicationWindow::analyzeCurve(Graph *g, const QString &whichFit, const QS
                             RecalcManager::OpLinearFit);
                 }
             }
-            delete fitter;
         }
     } else if (whichFit == "differentiate") {
         Differentiation *diff = new Differentiation(this, g, curveTitle);
@@ -864,32 +863,36 @@ void ApplicationWindow::analysis(const QString &whichFit)
 
 void ApplicationWindow::deleteFitTables()
 {
-    QList<MyWidget *> *mLst = new QList<MyWidget *>();
-    QList<MyWidget *> windows = windowsList();
-    for (int i = 0; i < int(windows.count()); i++) {
-        if (windows.at(i)->inherits("MultiLayer"))
-            mLst->append(windows.at(i));
-    }
-
-    foreach (MyWidget *ml, *mLst) {
-        if (ml->inherits("MultiLayer")) {
-            QWidgetList lst = ((MultiLayer *)ml)->graphPtrs();
-            foreach (QWidget *widget, lst) {
-                QList<QwtPlotCurve *> curves = ((Graph *)widget)->fitCurvesList();
-                foreach (QwtPlotCurve *c, curves) {
-                    if (((PlotCurve *)c)->type() != Graph::Function) {
-                        Table *t = ((DataCurve *)c)->table();
-                        if (!t)
-                            continue;
-
-                        t->askOnCloseEvent(false);
-                        t->close();
-                    }
+    QList<QPointer<Table>> fitTables;
+    QSet<Table *> seen;
+    const QList<MyWidget *> windows = windowsList();
+    for (MyWidget *w : windows) {
+        auto *ml = qobject_cast<MultiLayer *>(w);
+        if (!ml)
+            continue;
+        for (QWidget *widget : ml->graphPtrs()) {
+            auto *g = qobject_cast<Graph *>(widget);
+            if (!g)
+                continue;
+            const QList<QwtPlotCurve *> curves = g->fitCurvesList();
+            for (QwtPlotCurve *c : curves) {
+                auto *dc = dynamic_cast<DataCurve *>(c);
+                if (!dc || dc->type() == Graph::Function)
+                    continue;
+                Table *t = dc->table();
+                if (t && !seen.contains(t)) {
+                    seen.insert(t);
+                    fitTables.append(QPointer<Table>(t));
                 }
             }
         }
     }
-    delete mLst;
+    for (const QPointer<Table> &t : fitTables) {
+        if (!t)
+            continue;
+        t->askOnCloseEvent(false);
+        t->close();
+    }
 }
 
 void ApplicationWindow::translateCurveHor()
@@ -3647,6 +3650,7 @@ void ApplicationWindow::showYorkLinearFitDialog()
     if (curves.isEmpty())
         return;
 
+    QPointer<Graph> safeG(g);
     QDialog dlg(this);
     dlg.setWindowTitle(tr("Linear Fit with X & Y Errors (York)..."));
     dlg.setMinimumWidth(440);
@@ -3683,8 +3687,10 @@ void ApplicationWindow::showYorkLinearFitDialog()
         yErrCombo->clear();
         xErrCombo->addItem(tr("<None / Unit Weights>"), QString());
         yErrCombo->addItem(tr("<None / Unit Weights>"), QString());
+        if (!safeG)
+            return;
 
-        DataCurve *dc = dynamic_cast<DataCurve *>(g->curve(curveCombo->currentText()));
+        DataCurve *dc = dynamic_cast<DataCurve *>(safeG->curve(curveCombo->currentText()));
         if (dc && dc->table()) {
             Table *t = dc->table();
             for (int c = 0; c < t->numCols(); ++c) {
@@ -3709,10 +3715,10 @@ void ApplicationWindow::showYorkLinearFitDialog()
     QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     vbox->addWidget(btns);
 
-    if (dlg.exec() != QDialog::Accepted)
+    if (dlg.exec() != QDialog::Accepted || !safeG)
         return;
 
-    LinearFit *lf = new LinearFit(this, g);
+    LinearFit *lf = new LinearFit(this, safeG.data());
     lf->scaleErrors(fit_scale_errors);
     lf->setOutputPrecision(fit_output_precision);
     lf->generateFunction(generateUniformFitPoints, d_2_linear_fit_points ? 2 : fitPoints);
@@ -3726,7 +3732,8 @@ void ApplicationWindow::showYorkLinearFitDialog()
                 lf->showLegend();
             if (summaryBoxCheck->isChecked())
                 lf->insertFitSummaryBoxOnGraph();
-            g->replot();
+            if (safeG)
+                safeG->replot();
             emit modified();
         }
     }

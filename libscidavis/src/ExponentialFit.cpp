@@ -149,6 +149,67 @@ void ExponentialFit::init()
     }
 }
 
+void ExponentialFit::guessInitialValues()
+{
+    if (!d_param_init || d_x.size() < 2 || d_y.size() != d_x.size())
+        return;
+
+    size_t minIdx = 0, maxIdx = 0;
+    double xMin = std::numeric_limits<double>::infinity();
+    double xMax = -std::numeric_limits<double>::infinity();
+    double yMin = std::numeric_limits<double>::infinity();
+    double yMax = -std::numeric_limits<double>::infinity();
+    bool haveAny = false;
+    for (size_t i = 0; i < d_x.size(); ++i) {
+        if (!std::isfinite(d_x[i]) || !std::isfinite(d_y[i]))
+            continue;
+        if (!haveAny || d_x[i] < xMin) {
+            xMin = d_x[i];
+            minIdx = i;
+        }
+        if (!haveAny || d_x[i] > xMax) {
+            xMax = d_x[i];
+            maxIdx = i;
+        }
+        yMin = std::min(yMin, d_y[i]);
+        yMax = std::max(yMax, d_y[i]);
+        haveAny = true;
+    }
+    if (!haveAny)
+        return;
+
+    const double xSpan = xMax - xMin;
+    const double maxAbsX = std::max(std::abs(xMin), std::abs(xMax));
+    double rate = (xSpan > 1e-12) ? (1.0 / xSpan) : 1.0;
+    if (maxAbsX > 0.0 && rate * maxAbsX > 20.0)
+        rate = 20.0 / maxAbsX;
+    if (!std::isfinite(rate) || !(rate > 0.0))
+        rate = 1e-3;
+    const double lambdaInit = is_exp_growth ? -rate : rate;
+
+    if (!d_explicit_init_vals.contains(1))
+        gsl_vector_set(d_param_init, 1, lambdaInit);
+
+    const double yAtMin = d_y[minIdx];
+    const double yAtMax = d_y[maxIdx];
+    double y0Init = is_exp_growth ? yAtMin : yAtMax;
+    double refX = is_exp_growth ? xMax : xMin;
+    double expRef = std::exp(-lambdaInit * refX);
+    double aInit = (std::isfinite(expRef) && std::abs(expRef) > 1e-30)
+            ? ((is_exp_growth ? (yAtMax - y0Init) : (yAtMin - y0Init)) / expRef)
+            : (yMax - yMin);
+    if (!std::isfinite(aInit) || std::abs(aInit) <= 1e-30)
+        aInit = (yMax > yMin) ? (yMax - yMin) : 1.0;
+    if (!std::isfinite(y0Init))
+        y0Init = 0.0;
+
+    if (!d_explicit_init_vals.contains(0))
+        gsl_vector_set(d_param_init, 0, aInit);
+    if (!d_explicit_init_vals.contains(2))
+        gsl_vector_set(d_param_init, 2, y0Init);
+    d_initial_guesses_set = true;
+}
+
 double ExponentialFit::toInternalParameter(int index, double userVal) const
 {
     if (index == 1)

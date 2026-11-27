@@ -1233,8 +1233,8 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
                 }
                 if (hasAnyPieCallout) {
                     double pieR = 0.285 * qMin(cr.width(), cr.height());
-                    double pCx = double(cr.center().x());
-                    double pCy = double(cr.center().y());
+                    double pCx = 0.5 * double(cr.width());
+                    double pCy = 0.5 * double(cr.height());
                     if (hasVisPieLeg && pieLeg) {
                         const QRect lr = pieLeg->rect();
                         const QVariant ancProp = pl->property("_toriLegendAnchor");
@@ -1251,12 +1251,12 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
                             const double availH = qMax(0.20 * double(cr.height()),
                                                        double(cr.height()) - legBottom - 2.0 * pad);
                             pieR = qMax(10.0, qMin(0.255 * double(cr.width()), 0.34 * availH));
-                            pCx = double(cr.center().x());
-                            pCy = double(cr.top()) + legBottom + pad + 0.5 * availH;
+                            pCx = 0.5 * double(cr.width());
+                            pCy = legBottom + pad + 0.5 * availH;
                         } else {
                             pieR = 0.24 * qMin(cr.width(), cr.height());
-                            pCx = double(cr.left()) + 0.36 * double(cr.width());
-                            pCy = double(cr.top()) + 0.52 * double(cr.height());
+                            pCx = 0.36 * double(cr.width());
+                            pCy = 0.52 * double(cr.height());
                         }
                     }
                     const double lblR = 1.22 * pieR;

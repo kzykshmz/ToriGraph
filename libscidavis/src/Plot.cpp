@@ -33,6 +33,7 @@
 #include "Grid.h"
 #include "Legend.h"
 #include "MultiLayer.h"
+#include "SafeLinearScaleEngine.h"
 #include "ScaleDraw.h"
 #include "ScalePicker.h"
 #include "SelectionMoveResizer.h"
@@ -70,11 +71,108 @@
 #include <cmath>
 #include <iostream>
 #include <memory>
+#include <typeinfo>
 using namespace std;
 
 void setToriSuppressScaleBackboneInPrint(bool suppress);
 namespace {
 static double s_toriPrintDeviceScale = 1.0;
+
+// Guards Qwt5's QwtLinearScaleEngine against subnormal or overflowing spans where
+// QwtScaleMap::newFactor() computes (d_p2 - d_p1) / (d_s2 - d_s1) -> +/-Inf,
+// producing xTransform(s) = NaN and qRound(NaN) signed int overflow UB.
+class SafeLinearScaleEngine final : public QwtLinearScaleEngine
+{
+public:
+    static constexpr double kMinSafeSpan = 1.0e-290;
+    static constexpr double kMaxSafeBound = 1.0e300;
+
+    static void sanitizeBounds(double &x1, double &x2, double &stepSize, bool inverted)
+    {
+        bool boundsAdjusted = false;
+        if (!std::isfinite(x1) || !std::isfinite(x2)) {
+            x1 = inverted ? 1.0 : 0.0;
+            x2 = inverted ? 0.0 : 1.0;
+            stepSize = 0.0;
+            return;
+        }
+        const double clamped1 = qBound(-kMaxSafeBound, x1, kMaxSafeBound);
+        const double clamped2 = qBound(-kMaxSafeBound, x2, kMaxSafeBound);
+        if (clamped1 != x1 || clamped2 != x2) {
+            x1 = clamped1;
+            x2 = clamped2;
+            boundsAdjusted = true;
+        }
+        const double span = std::abs(x2 - x1);
+        if (!std::isfinite(span) || span < kMinSafeSpan) {
+            boundsAdjusted = true;
+            double mid = 0.5 * x1 + 0.5 * x2;
+            if (!std::isfinite(mid) || std::abs(mid) < kMinSafeSpan)
+                mid = 0.0;
+            double half = (mid == 0.0) ? 0.5 : std::max(0.5 * std::abs(mid), kMinSafeSpan);
+            if (half > 0.25 * kMaxSafeBound)
+                half = 0.25 * kMaxSafeBound;
+            if (mid + half > kMaxSafeBound)
+                mid = kMaxSafeBound - half;
+            else if (mid - half < -kMaxSafeBound)
+                mid = -kMaxSafeBound + half;
+            if (inverted) {
+                x1 = mid + half;
+                x2 = mid - half;
+            } else {
+                x1 = mid - half;
+                x2 = mid + half;
+            }
+            stepSize = 0.0;
+        }
+        const double safeSpan = std::abs(x2 - x1);
+        if (stepSize != 0.0) {
+            const double absStep = std::abs(stepSize);
+            if (boundsAdjusted || !std::isfinite(absStep) || absStep < kMinSafeSpan
+                || absStep > 0.5 * kMaxSafeBound || !std::isfinite(safeSpan / absStep)
+                || (safeSpan / absStep) > 10000.0) {
+                stepSize = 0.0;
+            }
+        }
+    }
+
+    void autoScale(int maxNumSteps, double &x1, double &x2, double &stepSize) const override
+    {
+        const bool inv = testAttribute(QwtScaleEngine::Inverted);
+        if (!std::isfinite(x1) || !std::isfinite(x2)) {
+            x1 = 0.0;
+            x2 = 1.0;
+            stepSize = 0.0;
+        } else {
+            x1 = qBound(-kMaxSafeBound, x1, kMaxSafeBound);
+            x2 = qBound(-kMaxSafeBound, x2, kMaxSafeBound);
+            if (std::abs(x2 - x1) < kMinSafeSpan) {
+                const double mid = 0.5 * x1 + 0.5 * x2;
+                if (!std::isfinite(mid) || std::abs(mid) < kMinSafeSpan) {
+                    x1 = 0.0;
+                    x2 = 0.0;
+                } else {
+                    x1 = mid;
+                    x2 = mid;
+                }
+            }
+        }
+        QwtLinearScaleEngine::autoScale(maxNumSteps, x1, x2, stepSize);
+        sanitizeBounds(x1, x2, stepSize, inv);
+    }
+
+    QwtScaleDiv divideScale(double x1, double x2, int maxMajSteps, int maxMinSteps,
+                            double stepSize = 0.0) const override
+    {
+        if (x1 == x2 && std::isfinite(x1))
+            return QwtScaleDiv();
+        const bool inv = (std::isfinite(x1) && std::isfinite(x2))
+                ? (x1 > x2)
+                : (x1 > x2 || testAttribute(QwtScaleEngine::Inverted));
+        sanitizeBounds(x1, x2, stepSize, inv);
+        return QwtLinearScaleEngine::divideScale(x1, x2, maxMajSteps, maxMinSteps, stepSize);
+    }
+};
 
 class PlotAxisTitleOverlay : public QWidget
 {
@@ -174,6 +272,18 @@ double Plot::axisDecorationScale(const QPainter *painter) const
     return s;
 }
 
+QwtLinearScaleEngine *createSafeLinearScaleEngine()
+{
+    return new SafeLinearScaleEngine();
+}
+
+bool isStandardLinearScaleEngine(const QwtScaleEngine *se)
+{
+    return se
+            && (typeid(*se) == typeid(QwtLinearScaleEngine)
+                || typeid(*se) == typeid(SafeLinearScaleEngine));
+}
+
 Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
 {
     setAutoReplot(false);
@@ -233,6 +343,7 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
 
     // custom scale
     for (int i = 0; i < QwtPlot::axisCnt; i++) {
+        setAxisScaleEngine(i, new SafeLinearScaleEngine());
         setAxisMaxMinor(i, 2);
         setAxisFont(i, defaultTickFont);
         QwtScaleWidget *scale = (QwtScaleWidget *)axisWidget(i);
@@ -1374,6 +1485,59 @@ void Plot::printScale(QPainter *painter, int axisId, int startDist, int endDist,
 
 void Plot::replot()
 {
+    auto isScaleDivSafe = [](const QwtScaleDiv *sd) -> bool {
+        if (!sd || !sd->isValid())
+            return true;
+        const double lo = sd->lowerBound();
+        const double hi = sd->upperBound();
+        if (!std::isfinite(lo) || !std::isfinite(hi) || !std::isfinite(hi - lo))
+            return false;
+        const double span = std::abs(hi - lo);
+        if (span > 0.0 && span < SafeLinearScaleEngine::kMinSafeSpan)
+            return false;
+        if (span == 0.0 && !sd->ticks(QwtScaleDiv::MajorTick).isEmpty())
+            return false;
+        return true;
+    };
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        QwtScaleEngine *eng = axisScaleEngine(a);
+        if (!eng)
+            continue;
+        const bool autoScale = axisAutoScale(a);
+        const QwtScaleDiv *curDiv = axisScaleDiv(a);
+        if (typeid(*eng) == typeid(QwtLinearScaleEngine)) {
+            const bool hadValidDiv = !autoScale && curDiv && curDiv->isValid();
+            const bool divSafe = isScaleDivSafe(curDiv);
+            const QwtScaleDiv savedDiv = (hadValidDiv && divSafe) ? *curDiv : QwtScaleDiv();
+            const double unsafeLo = hadValidDiv ? curDiv->lowerBound() : 0.0;
+            const double unsafeHi = hadValidDiv ? curDiv->upperBound() : 0.0;
+            auto *safeEng = new SafeLinearScaleEngine();
+            safeEng->setAttributes(eng->attributes());
+            safeEng->setMargins(eng->lowerMargin(), eng->upperMargin());
+            safeEng->setReference(eng->reference());
+            const bool prevAutoReplot = autoReplot();
+            setAutoReplot(false);
+            setAxisScaleEngine(a, safeEng);
+            if (hadValidDiv) {
+                if (divSafe) {
+                    setAxisScaleDiv(a, savedDiv);
+                } else {
+                    setAxisScaleDiv(a,
+                                    safeEng->divideScale(unsafeLo, unsafeHi, axisMaxMajor(a),
+                                                         axisMaxMinor(a), 0.0));
+                }
+            }
+            setAutoReplot(prevAutoReplot);
+        } else if (typeid(*eng) == typeid(SafeLinearScaleEngine) && !autoScale && curDiv
+                   && curDiv->isValid() && !isScaleDivSafe(curDiv)) {
+            const bool prevAutoReplot = autoReplot();
+            setAutoReplot(false);
+            setAxisScaleDiv(a,
+                            eng->divideScale(curDiv->lowerBound(), curDiv->upperBound(),
+                                             axisMaxMajor(a), axisMaxMinor(a), 0.0));
+            setAutoReplot(prevAutoReplot);
+        }
+    }
     updateAxes();
     static QSet<const Plot *> s_syncingPlots;
     if (!s_syncingPlots.contains(this)) {

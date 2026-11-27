@@ -2431,7 +2431,21 @@ Table *AdvancedSignalProc::crossCoherence(ApplicationWindow *app, Graph *g,
     if (!(tHi > tLo))
         return nullptr;
 
-    const int nGrid = std::max(static_cast<int>(tA.size()), static_cast<int>(tB.size()));
+    const double dtA = (fsA > 0.0 && std::isfinite(fsA))
+            ? (1.0 / fsA)
+            : ((tA.size() > 1) ? ((tA.back() - tA.front()) / static_cast<double>(tA.size() - 1)) : 0.0);
+    const double dtB = (fsB > 0.0 && std::isfinite(fsB))
+            ? (1.0 / fsB)
+            : ((tB.size() > 1) ? ((tB.back() - tB.front()) / static_cast<double>(tB.size() - 1)) : 0.0);
+    const double dtTarget = std::max(dtA, dtB);
+    if (!(dtTarget > 0.0) || !std::isfinite(dtTarget))
+        return nullptr;
+
+    const int maxSourceN = std::max(static_cast<int>(tA.size()), static_cast<int>(tB.size()));
+    const double rawGrid = 1.0 + std::floor((tHi - tLo) / dtTarget + 0.5);
+    const int nGrid = (!std::isfinite(rawGrid) || rawGrid < 2.0)
+            ? 0
+            : std::min(maxSourceN, static_cast<int>(std::min(rawGrid, static_cast<double>(maxSourceN))));
     if (nGrid < 8)
         return nullptr;
 

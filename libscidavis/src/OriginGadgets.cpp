@@ -1175,10 +1175,15 @@ public:
             QFont calloutFnt("Arial", 8, QFont::Bold);
             painter->setFont(calloutFnt);
             const QFontMetrics cfm(calloutFnt);
+            Plot *plotPtr = d_owner->d_graph_guard ? d_owner->d_graph_guard->plotWidget() : nullptr;
             for (int k = 0; k < d_owner->d_intersections.size(); ++k) {
                 const auto &ir = d_owner->d_intersections[k];
-                const int ix = xMap.transform(ir.x);
-                const int iy = yMap.transform(ir.y);
+                QwtPlotCurve *ca = d_owner->d_graph_guard ? d_owner->d_graph_guard->curve(ir.curveA)
+                                                          : nullptr;
+                const int ix = (plotPtr && ca) ? plotPtr->canvasMap(ca->xAxis()).transform(ir.x)
+                                               : xMap.transform(ir.x);
+                const int iy = (plotPtr && ca) ? plotPtr->canvasMap(ca->yAxis()).transform(ir.y)
+                                               : yMap.transform(ir.y);
 
                 QPolygon diamond;
                 diamond << QPoint(ix, iy - 6) << QPoint(ix + 6, iy) << QPoint(ix, iy + 6)
@@ -1828,10 +1833,16 @@ void RoiGadgetTool::recalculate()
                                      QPointF(std::max(rx1, rx2), std::max(ry1, ry2)));
                 }
 
-                const double epsX = 1e-9 * std::max(1.0, pairRoi.width());
-                const double epsY = 1e-9 * std::max(1.0, pairRoi.height());
-                const double dupTolX = 1e-7 * std::max(1.0, pairRoi.width());
-                const double dupTolY = 1e-7 * std::max(1.0, pairRoi.height());
+                const double maxAbsRoiX = std::max(std::fabs(pairRoi.left()), std::fabs(pairRoi.right()));
+                const double maxAbsRoiY = std::max(std::fabs(pairRoi.top()), std::fabs(pairRoi.bottom()));
+                const double scaleX = std::max({ pairRoi.width(), 1e-12 * maxAbsRoiX,
+                                                 std::numeric_limits<double>::min() });
+                const double scaleY = std::max({ pairRoi.height(), 1e-12 * maxAbsRoiY,
+                                                 std::numeric_limits<double>::min() });
+                const double epsX = 1e-9 * scaleX;
+                const double epsY = 1e-9 * scaleY;
+                const double dupTolX = 1e-7 * scaleX;
+                const double dupTolY = 1e-7 * scaleY;
 
                 QVector<IntersectionRow> pairHits;
                 for (const Seg &sa : curveSets[a].segs) {
@@ -1859,7 +1870,7 @@ void RoiGadgetTool::recalculate()
                         const double denom = dx1 * dy2 - dy1 * dx2;
                         const double segScale =
                                 (std::fabs(dx1) + std::fabs(dy1)) * (std::fabs(dx2) + std::fabs(dy2));
-                        if (std::fabs(denom) <= 1e-13 * std::max(1.0, segScale))
+                        if (std::fabs(denom) <= 1e-13 * std::max(segScale, std::numeric_limits<double>::min()))
                             continue;
 
                         const double qpx = sb.x1 - sa.x1;
@@ -1895,7 +1906,7 @@ void RoiGadgetTool::recalculate()
 
         std::stable_sort(d_intersections.begin(), d_intersections.end(),
                          [](const IntersectionRow &lhs, const IntersectionRow &rhs) {
-                             if (std::fabs(lhs.x - rhs.x) > 1e-12)
+                             if (lhs.x != rhs.x)
                                  return lhs.x < rhs.x;
                              return lhs.y < rhs.y;
                          });
@@ -3238,15 +3249,35 @@ void RoiGadgetTool::recalculate()
         ux.reserve(fullPts.size());
         uy.reserve(fullPts.size());
         std::vector<int> dupCount;
-        for (const auto &fp : fullPts) {
-            if (!fullHasReversals && !ux.empty() && std::fabs(fp.first - ux.back()) <= 1e-14) {
-                const int cNew = dupCount.back() + 1;
-                uy.back() = (uy.back() * double(dupCount.back()) + fp.second) / double(cNew);
-                dupCount.back() = cNew;
-            } else {
-                ux.push_back(fp.first);
-                uy.push_back(fp.second);
-                dupCount.push_back(1);
+        if (!fullHasReversals) {
+            for (const auto &fp : fullPts) {
+                if (!ux.empty() && std::fabs(fp.first - ux.back()) <= 1e-14) {
+                    const int cNew = dupCount.back() + 1;
+                    uy.back() = (uy.back() * double(dupCount.back()) + fp.second) / double(cNew);
+                    dupCount.back() = cNew;
+                } else {
+                    ux.push_back(fp.first);
+                    uy.push_back(fp.second);
+                    dupCount.push_back(1);
+                }
+            }
+        } else if (!hasXReversals) {
+            std::vector<std::pair<double, double>> roiPts;
+            roiPts.reserve(n);
+            for (size_t i = 0; i < n; ++i)
+                roiPts.emplace_back(xv[i], yv[i]);
+            std::stable_sort(roiPts.begin(), roiPts.end(),
+                             [](const auto &a, const auto &b) { return a.first < b.first; });
+            for (const auto &rp : roiPts) {
+                if (!ux.empty() && std::fabs(rp.first - ux.back()) <= 1e-14) {
+                    const int cNew = dupCount.back() + 1;
+                    uy.back() = (uy.back() * double(dupCount.back()) + rp.second) / double(cNew);
+                    dupCount.back() = cNew;
+                } else {
+                    ux.push_back(rp.first);
+                    uy.push_back(rp.second);
+                    dupCount.push_back(1);
+                }
             }
         }
 
@@ -3710,7 +3741,7 @@ void RoiGadgetTool::setupFloatingBar()
     connect(bar->btnOption, &QPushButton::clicked, this, [this, bar]() {
         if (!d_graph_guard)
             return;
-        QMenu m(bar);
+        QPointer<QMenu> m = new QMenu(bar);
         ApplicationWindow *appWin = d_app ? d_app.data() : resolveAppWindowFromGraph(d_graph_guard);
         const bool showAdvDomain = appWin ? appWin->showsAdvancedDomainFeatures() : false;
 
@@ -3727,7 +3758,7 @@ void RoiGadgetTool::setupFloatingBar()
             for (const auto &fi : fitModels) {
                 if (!showAdvDomain && fi.model == FitBoltzmann && d_fit_model != fi.model)
                     continue;
-                QAction *act = m.addAction(tr(fi.label));
+                QAction *act = m->addAction(tr(fi.label));
                 act->setCheckable(true);
                 act->setChecked(d_fit_model == fi.model);
                 connect(act, &QAction::triggered, this, [this, fm = fi.model]() {
@@ -3743,19 +3774,19 @@ void RoiGadgetTool::setupFloatingBar()
                 { BaseRoiMin, QT_TR_NOOP("ROI Minimum") }
             };
             for (const auto &bi : baseItems) {
-                QAction *act = m.addAction(tr(bi.label));
+                QAction *act = m->addAction(tr(bi.label));
                 act->setCheckable(true);
                 act->setChecked(d_integrate_baseline == bi.base);
                 connect(act, &QAction::triggered, this,
                         [this, b = bi.base]() { setIntegrateBaseline(b); });
             }
         } else if (d_mode == QuickPeaks) {
-            QAction *actPos = m.addAction(tr("Quick Peaks"));
+            QAction *actPos = m->addAction(tr("Quick Peaks"));
             actPos->setCheckable(true);
             actPos->setChecked(!d_detect_negative_peaks);
             connect(actPos, &QAction::triggered, this,
                     [this]() { setDetectNegativePeaks(false); });
-            QAction *actNeg = m.addAction(tr("Detect Negative Peaks (Troughs)"));
+            QAction *actNeg = m->addAction(tr("Detect Negative Peaks (Troughs)"));
             actNeg->setCheckable(true);
             actNeg->setChecked(d_detect_negative_peaks);
             connect(actNeg, &QAction::triggered, this,
@@ -3763,7 +3794,7 @@ void RoiGadgetTool::setupFloatingBar()
         } else if (d_mode == Differentiate) {
             const int sgWindows[] = { 5, 9, 15, 25 };
             for (int w : sgWindows) {
-                QAction *act = m.addAction(tr("%1 Points").arg(w));
+                QAction *act = m->addAction(tr("%1 Points").arg(w));
                 act->setCheckable(true);
                 act->setChecked(d_sg_window == w);
                 connect(act, &QAction::triggered, this, [this, w]() { setSavGolWindow(w); });
@@ -3771,13 +3802,15 @@ void RoiGadgetTool::setupFloatingBar()
         }
         if (d_mode == QuickFit || d_mode == QuickSigmoidal || d_mode == Integrate
             || d_mode == QuickPeaks || d_mode == Differentiate) {
-            m.addSeparator();
-            QMenu *switchMenu = m.addMenu(tr("Switch Gadget..."));
+            m->addSeparator();
+            QMenu *switchMenu = m->addMenu(tr("Switch Gadget..."));
             populateGadgetModeMenu(switchMenu, showAdvDomain);
         } else {
-            populateGadgetModeMenu(&m, showAdvDomain);
+            populateGadgetModeMenu(m.data(), showAdvDomain);
         }
-        m.exec(bar->btnOption->mapToGlobal(QPoint(0, bar->btnOption->height())));
+        m->exec(bar->btnOption->mapToGlobal(QPoint(0, bar->btnOption->height())));
+        if (m)
+            delete m.data();
     });
 
     connect(bar->btnCommit, &QPushButton::clicked, this, [this]() {
@@ -4063,12 +4096,6 @@ bool RoiGadgetTool::eventFilter(QObject *obj, QEvent *event)
 
     case QEvent::MouseButtonPress: {
         auto *me = static_cast<QMouseEvent *>(event);
-        if (me->button() == Qt::RightButton) {
-            const bool inside = (hitTestPixelPos(me->pos()) != DragNone);
-            showRoiContextMenu(me->globalPos(), inside);
-            me->accept();
-            return true;
-        }
         if (me->button() == Qt::LeftButton) {
             const DragMode hit = hitTestPixelPos(me->pos());
             const bool isRubberMode = (d_mode == MaskRegion || d_mode == UnmaskRegion
@@ -4968,7 +4995,9 @@ public:
         auto drawBadge = [&](int xPx, const QString &lbl, const QColor &col, bool isActive) {
             const int bw = tfm.horizontalAdvance(lbl) + 8;
             const int bh = tfm.height() + 2;
-            const int bx = std::clamp(xPx + 4, canvasRect.left() + 2, canvasRect.right() - bw - 2);
+            const int bxLo = canvasRect.left() + 2;
+            const int bxHi = std::max(bxLo, canvasRect.right() - bw - 2);
+            const int bx = std::clamp(xPx + 4, bxLo, bxHi);
             const int by = canvasRect.top() + 10;
             const QRect r(bx, by, bw, bh);
             painter->setBrush(col);
@@ -5224,20 +5253,22 @@ void DeltaCursorTool::setupFloatingBar()
     d_floating_bar = bar;
 
     connect(bar->btnOption, &QPushButton::clicked, this, [this, bar]() {
-        QMenu m(bar);
-        QAction *a1 = m.addAction(tr("Interpolate on Curve"));
+        QPointer<QMenu> m = new QMenu(bar);
+        QAction *a1 = m->addAction(tr("Interpolate on Curve"));
         a1->setCheckable(true);
         a1->setChecked(d_snap_mode == SnapInterpolateCurve);
         connect(a1, &QAction::triggered, this, [this]() { setSnapMode(SnapInterpolateCurve); });
-        QAction *a2 = m.addAction(tr("Snap to Nearest Data Point"));
+        QAction *a2 = m->addAction(tr("Snap to Nearest Data Point"));
         a2->setCheckable(true);
         a2->setChecked(d_snap_mode == SnapNearestPoint);
         connect(a2, &QAction::triggered, this, [this]() { setSnapMode(SnapNearestPoint); });
-        QAction *a3 = m.addAction(tr("Free Screen Crosshair"));
+        QAction *a3 = m->addAction(tr("Free Screen Crosshair"));
         a3->setCheckable(true);
         a3->setChecked(d_snap_mode == FreeScreenCrosshair);
         connect(a3, &QAction::triggered, this, [this]() { setSnapMode(FreeScreenCrosshair); });
-        m.exec(bar->btnOption->mapToGlobal(QPoint(0, bar->btnOption->height())));
+        m->exec(bar->btnOption->mapToGlobal(QPoint(0, bar->btnOption->height())));
+        if (m)
+            delete m.data();
     });
 
     bar->btnCommit->setText(QCoreApplication::translate("OriginGadgets", "Stamp"));
@@ -5454,59 +5485,72 @@ void DeltaCursorTool::recalculate()
             for (int i = iStart; i <= iEnd; ++i)
                 spanPts.push_back(pts[size_t(i)]);
         } else {
-            spanPts.reserve(pts.size() + 2);
-            const double yLo = interpAt(xLo);
-            const double yHi = interpAt(xHi);
-            spanPts.emplace_back(xLo, yLo);
-            for (const auto &pt : pts) {
-                if (pt.first > xLo + 1e-15 && pt.first < xHi - 1e-15)
-                    spanPts.push_back(pt);
+            const double dataMinX = pts.front().first;
+            const double dataMaxX = pts.back().first;
+            const double cLo = std::max(xLo, dataMinX);
+            const double cHi = std::min(xHi, dataMaxX);
+            if (cHi >= cLo) {
+                spanPts.reserve(pts.size() + 2);
+                const double yLo = interpAt(cLo);
+                const double yHi = interpAt(cHi);
+                spanPts.emplace_back(cLo, yLo);
+                for (const auto &pt : pts) {
+                    if (pt.first > cLo + 1e-15 && pt.first < cHi - 1e-15)
+                        spanPts.push_back(pt);
+                }
+                if (cHi > cLo + 1e-15)
+                    spanPts.emplace_back(cHi, yHi);
             }
-            if (xHi > xLo + 1e-15)
-                spanPts.emplace_back(xHi, yHi);
         }
 
-        double area = 0.0;
-        double y2Integral = 0.0;
-        double absPathX = 0.0;
-        double minY = spanPts.front().second;
-        double maxY = spanPts.front().second;
-        for (size_t i = 0; i < spanPts.size(); ++i) {
-            minY = std::min(minY, spanPts[i].second);
-            maxY = std::max(maxY, spanPts[i].second);
-            if (i + 1 < spanPts.size()) {
-                const double segDx = spanPts[i + 1].first - spanPts[i].first;
-                const double ya = spanPts[i].second;
-                const double yb = spanPts[i + 1].second;
-                if (hasXReversals) {
-                    const double adx = std::fabs(segDx);
-                    area += 0.5 * (ya + yb) * segDx;
-                    y2Integral += (adx / 3.0) * (ya * ya + ya * yb + yb * yb);
-                    absPathX += adx;
-                } else if (segDx > 0.0) {
-                    area += 0.5 * (ya + yb) * segDx;
-                    y2Integral += (segDx / 3.0) * (ya * ya + ya * yb + yb * yb);
-                    absPathX += segDx;
+        if (spanPts.empty()) {
+            d_readout.area = 0.0;
+            d_readout.rms = 0.0;
+            d_readout.minY = std::min(ry1, ry2);
+            d_readout.maxY = std::max(ry1, ry2);
+        } else {
+            double area = 0.0;
+            double y2Integral = 0.0;
+            double absPathX = 0.0;
+            double minY = spanPts.front().second;
+            double maxY = spanPts.front().second;
+            for (size_t i = 0; i < spanPts.size(); ++i) {
+                minY = std::min(minY, spanPts[i].second);
+                maxY = std::max(maxY, spanPts[i].second);
+                if (i + 1 < spanPts.size()) {
+                    const double segDx = spanPts[i + 1].first - spanPts[i].first;
+                    const double ya = spanPts[i].second;
+                    const double yb = spanPts[i + 1].second;
+                    if (hasXReversals) {
+                        const double adx = std::fabs(segDx);
+                        area += 0.5 * (ya + yb) * segDx;
+                        y2Integral += (adx / 3.0) * (ya * ya + ya * yb + yb * yb);
+                        absPathX += adx;
+                    } else if (segDx > 0.0) {
+                        area += 0.5 * (ya + yb) * segDx;
+                        y2Integral += (segDx / 3.0) * (ya * ya + ya * yb + yb * yb);
+                        absPathX += segDx;
+                    }
                 }
             }
-        }
-        d_readout.area = area;
-        d_readout.rms = (absPathX > 1e-30)
-                ? std::sqrt(std::max(0.0, y2Integral / absPathX))
-                : std::fabs(0.5 * (ry1 + ry2));
-        d_readout.minY = minY;
-        d_readout.maxY = maxY;
+            d_readout.area = area;
+            d_readout.rms = (absPathX > 1e-30)
+                    ? std::sqrt(std::max(0.0, y2Integral / absPathX))
+                    : std::fabs(0.5 * (ry1 + ry2));
+            d_readout.minY = minY;
+            d_readout.maxY = maxY;
 
-        Plot *plotPtr = d_graph_guard ? d_graph_guard->plotWidget() : nullptr;
-        const bool logY = c && isAxisLog10(plotPtr, c->yAxis());
-        const double baseY = logY ? std::max(1e-100, minY > 0.0 ? minY * 0.5 : 1e-12) : 0.0;
-        if (spanPts.size() >= 2) {
-            d_span_poly_pts.reserve(static_cast<int>(spanPts.size()) + 2);
-            d_span_poly_pts.append(QPointF(spanPts.front().first, baseY));
-            for (const auto &sp : spanPts)
-                d_span_poly_pts.append(
-                        QPointF(sp.first, logY ? std::max(1e-100, sp.second) : sp.second));
-            d_span_poly_pts.append(QPointF(spanPts.back().first, baseY));
+            Plot *plotPtr = d_graph_guard ? d_graph_guard->plotWidget() : nullptr;
+            const bool logY = c && isAxisLog10(plotPtr, c->yAxis());
+            const double baseY = logY ? std::max(1e-100, minY > 0.0 ? minY * 0.5 : 1e-12) : 0.0;
+            if (spanPts.size() >= 2) {
+                d_span_poly_pts.reserve(static_cast<int>(spanPts.size()) + 2);
+                d_span_poly_pts.append(QPointF(spanPts.front().first, baseY));
+                for (const auto &sp : spanPts)
+                    d_span_poly_pts.append(
+                            QPointF(sp.first, logY ? std::max(1e-100, sp.second) : sp.second));
+                d_span_poly_pts.append(QPointF(spanPts.back().first, baseY));
+            }
         }
     } else {
         d_readout.area = 0.0;
@@ -5755,11 +5799,6 @@ bool DeltaCursorTool::eventFilter(QObject *obj, QEvent *event)
 
     case QEvent::MouseButtonPress: {
         auto *me = static_cast<QMouseEvent *>(event);
-        if (me->button() == Qt::RightButton) {
-            showContextMenu(me->globalPos());
-            me->accept();
-            return true;
-        }
         if (me->button() == Qt::LeftButton && !(me->modifiers() & Qt::AltModifier)) {
             DragTarget hit = hitTestPixelPos(me->pos());
             if (hit == DragNone) {
@@ -6155,9 +6194,11 @@ public:
         auto drawBadge = [&](int bx, int by, const QString &lbl, const QColor &col) {
             const int bw = tfm.horizontalAdvance(lbl) + 8;
             const int bh = tfm.height() + 2;
-            const QRect r(std::clamp(bx, canvasRect.left() + 2, canvasRect.right() - bw - 2),
-                          std::clamp(by, canvasRect.top() + 2, canvasRect.bottom() - bh - 2), bw,
-                          bh);
+            const int xLo = canvasRect.left() + 2;
+            const int xHi = std::max(xLo, canvasRect.right() - bw - 2);
+            const int yLo = canvasRect.top() + 2;
+            const int yHi = std::max(yLo, canvasRect.bottom() - bh - 2);
+            const QRect r(std::clamp(bx, xLo, xHi), std::clamp(by, yLo, yHi), bw, bh);
             painter->setBrush(col);
             painter->setPen(Qt::NoPen);
             painter->drawRoundedRect(r, 3.0, 3.0);
@@ -6854,11 +6895,6 @@ bool ImageProfileGadgetTool::eventFilter(QObject *obj, QEvent *event)
 
     case QEvent::MouseButtonPress: {
         auto *me = static_cast<QMouseEvent *>(event);
-        if (me->button() == Qt::RightButton) {
-            showContextMenu(me->globalPos());
-            me->accept();
-            return true;
-        }
         if (me->button() == Qt::LeftButton && !(me->modifiers() & Qt::AltModifier)) {
             DragTarget hit = hitTestPixelPos(me->pos());
             if (hit == DragNone) {

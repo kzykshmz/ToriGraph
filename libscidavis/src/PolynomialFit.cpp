@@ -473,17 +473,29 @@ static double poly_model_d(const gsl_vector *x, void *params)
 static double computeTransformedR2(const std::vector<double> &yt,
                                    const std::vector<double> &yfit_t)
 {
+    const double nanVal = std::numeric_limits<double>::quiet_NaN();
     if (yt.size() < 2 || yfit_t.size() != yt.size())
-        return 1.0;
-    double mean = std::accumulate(yt.begin(), yt.end(), 0.0) / double(yt.size());
-    double tss = 0.0, rss = 0.0;
+        return nanVal;
+    double mean = 0.0;
+    for (size_t i = 0; i < yt.size(); ++i) {
+        if (!std::isfinite(yt[i]) || !std::isfinite(yfit_t[i]))
+            return nanVal;
+        mean += yt[i];
+    }
+    mean /= double(yt.size());
+    double tss = 0.0, rss = 0.0, sumSqY = 0.0;
     for (size_t i = 0; i < yt.size(); ++i) {
         double dt = yt[i] - mean;
         double dr = yt[i] - yfit_t[i];
         tss += dt * dt;
         rss += dr * dr;
+        sumSqY += yt[i] * yt[i];
     }
-    return (tss > 1e-30) ? (1.0 - rss / tss) : 1.0;
+    if (!std::isfinite(tss) || !std::isfinite(rss))
+        return nanVal;
+    if (tss <= 0.0 || Fit::sumOfSquaresNegligible(tss, sumSqY))
+        return (rss <= 0.0 || Fit::sumOfSquaresNegligible(rss, sumSqY)) ? 1.0 : nanVal;
+    return 1.0 - rss / tss;
 }
 
 struct ApparentLogData
@@ -642,6 +654,8 @@ void PolynomialFit::init()
     d_fdf = poly_model_fdf;
     d_fsimplex = poly_model_d;
     d_explanation = tr("Polynomial");
+    if (d_order < 0)
+        d_order = 0;
     d_p = d_order + 1;
     d_min_points = d_p;
 
@@ -1081,6 +1095,12 @@ void LinearFit::fit()
                 double c0 = 0.0, c1 = 0.0, cov00 = 0.0, cov01 = 0.0, cov11 = 0.0, tmpChi2 = 0.0;
                 gsl_fit_wlinear(logData.xt.data(), 1, logData.wt.data(), 1, logData.yt.data(), 1,
                                 logData.xt.size(), &c0, &c1, &cov00, &cov01, &cov11, &tmpChi2);
+                if (!std::isfinite(c0) || !std::isfinite(c1)) {
+                    double wmX = 0.0, wmY = 0.0;
+                    c0 = computeWeightedMeanXY(logData.xt, logData.yt, logData.wt, wmX, wmY) ? wmY
+                                                                                             : 0.0;
+                    c1 = 0.0;
+                }
                 if (!d_all_guesses_set && !d_explicit_init_vals.contains(0))
                     gsl_vector_set(d_param_init, 0, c0);
                 if (!d_all_guesses_set && !d_explicit_init_vals.contains(1))
@@ -1193,6 +1213,11 @@ void LinearFit::fit()
             double c0 = 0.0, c1 = 0.0, cov00 = 0.0, cov01 = 0.0, cov11 = 0.0, tmpChi2 = 0.0;
             gsl_fit_wlinear(d_x.data(), 1, weights.data(), 1, d_y.data(), 1, d_x.size(), &c0, &c1,
                             &cov00, &cov01, &cov11, &tmpChi2);
+            if (!std::isfinite(c0) || !std::isfinite(c1)) {
+                double wmX = 0.0, wmY = 0.0;
+                c0 = computeWeightedMeanXY(d_x, d_y, weights, wmX, wmY) ? wmY : 0.0;
+                c1 = 0.0;
+            }
             if (!d_all_guesses_set && !d_explicit_init_vals.contains(0))
                 gsl_vector_set(d_param_init, 0, c0);
             if (!d_all_guesses_set && !d_explicit_init_vals.contains(1))
@@ -1336,8 +1361,8 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
                     }
                 }
             }
-            if ((!tbl || colIdx < 0) && app && app->tableList()) {
-                for (MyWidget *w : *app->tableList()) {
+            if ((!tbl || colIdx < 0) && app) {
+                for (MyWidget *w : app->windowsList()) {
                     Table *cand = qobject_cast<Table *>(w);
                     if (!cand)
                         continue;
@@ -1423,10 +1448,12 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
     //   W = wx wy / (wx + b^2 wy) = 1 / (vy + b^2 vx),
     //   beta = W (U / wy + b V / wx) = W (U vy + b V vx).
     std::vector<double> xs, ys, vx, vy;
+    std::vector<size_t> keptIdx;
     xs.reserve(n);
     ys.reserve(n);
     vx.reserve(n);
     vy.reserve(n);
+    keptIdx.reserve(n);
     for (size_t i = 0; i < n; ++i) {
         if (!std::isfinite(sx[i]) || !std::isfinite(sy[i]))
             continue;
@@ -1436,6 +1463,7 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
         ys.push_back(d_y[i]);
         vx.push_back(sx[i] * sx[i]);
         vy.push_back(sy[i] * sy[i]);
+        keptIdx.push_back(i);
     }
     const size_t m = xs.size();
     if (m < 2)
@@ -1553,11 +1581,13 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
     double sumWu2 = 0.0;
     double S = 0.0;
     double S_tot = 0.0;
+    double rssUsed = 0.0;
     for (size_t i = 0; i < m; ++i) {
         double ui = x_adj[i] - x_adj_bar;
         sumWu2 += W[i] * ui * ui;
         double resid = ys[i] - b * xs[i] - a;
         S += W[i] * resid * resid;
+        rssUsed += resid * resid;
         double dyBar = ys[i] - Ybar;
         S_tot += W[i] * dyBar * dyBar;
     }
@@ -1570,6 +1600,22 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
     bool usedFallbackUnitErrors = (!hasExplicitX && !hasExplicitY);
     d_y_error_source = usedFallbackUnitErrors ? UnknownErrors : CustomErrors;
     d_weighting_method = usedFallbackUnitErrors ? WeightNone : WeightInstrumental;
+    if (usedFallbackUnitErrors) {
+        d_raw_y_errors.clear();
+        d_y_errors.assign(n, 1.0);
+    } else {
+        const double infVal = std::numeric_limits<double>::infinity();
+        d_raw_y_errors.assign(n, nanVal);
+        d_y_errors.assign(n, infVal);
+        for (size_t k = 0; k < m; ++k) {
+            const size_t origI = keptIdx[k];
+            const double effSigma = (W[k] > 0.0 && std::isfinite(W[k]))
+                    ? (1.0 / std::sqrt(W[k]))
+                    : infVal;
+            d_raw_y_errors[origI] = effSigma;
+            d_y_errors[origI] = effSigma;
+        }
+    }
 
     gsl_matrix_set(covar, 0, 0, var_a);
     gsl_matrix_set(covar, 0, 1, cov_ab);
@@ -1577,12 +1623,11 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
     gsl_matrix_set(covar, 1, 1, var_b);
 
     chi_2 = S;
-    // Left-out points do not count towards the degrees of freedom either.
-    d_has_custom_dof = (m < n);
-    if (d_has_custom_dof) {
-        d_custom_n_points = int(m);
-        d_custom_p_free = 2;
-    }
+    // Always record the exact count of points used in York's regression so
+    // effectivePointCount()/degreesOfFreedom() do not depend on unpopulated Y-only error arrays.
+    d_has_custom_dof = true;
+    d_custom_n_points = int(m);
+    d_custom_p_free = 2;
     const double covScale = effectiveCovarScale();
 
     d_york_slope = b;
@@ -1596,8 +1641,8 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
 
     d_app_log_x = false;
     d_app_log_y = false;
-    d_has_custom_rss = false;
-    d_custom_rss = 0.0;
+    d_has_custom_rss = true;
+    d_custom_rss = rssUsed;
     d_convergence = Converged;
     d_fit_notes.clear();
     setStraightLinePearson(xs, ys);

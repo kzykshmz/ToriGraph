@@ -383,6 +383,8 @@ FitDialog::~FitDialog()
             d_fitter = nullptr;
         }
     }
+    delete d_src_table;
+    d_src_table = nullptr;
 }
 
 void FitDialog::initFitPage()
@@ -858,8 +860,10 @@ void FitDialog::initAdvancedPage()
     QHBoxLayout *hbox1 = new QHBoxLayout();
 
     btnBack = new QPushButton(tr("<< &Fit"));
-    connect(btnBack, SIGNAL(clicked()), this, SLOT(showFitPage()));
-    connect(btnBack, SIGNAL(clicked()), this, SLOT(applyChanges()));
+    connect(btnBack, &QPushButton::clicked, this, [this]() {
+        applyChanges();
+        tw->setCurrentWidget(fitPage);
+    });
     hbox1->addWidget(btnBack);
 
     btnApply = new QPushButton(tr("&Apply"));
@@ -1240,7 +1244,8 @@ void FitDialog::setGraph(Graph *g)
     QString selectedCurve = g->selectedCurveTitle();
     if (!selectedCurve.isEmpty()) {
         int index = boxCurve->findText(selectedCurve);
-        boxCurve->setCurrentIndex(index);
+        if (index >= 0)
+            boxCurve->setCurrentIndex(index);
     }
     activateCurve(boxCurve->currentText());
 
@@ -1533,9 +1538,9 @@ void FitDialog::setFunction(bool ok)
             QStringList lst;
             if ((fn == "Gauss" || fn == "Lorentz" || fn == "PseudoVoigt" || fn == "PearsonVII"
                  || fn == "Voigt" || fn == "DoniachSunjic")
-                && polynomOrderBox->isVisible()) {
+                && !polynomOrderBox->isHidden()) {
                 lst = MultiPeakFit::generateParameterList(polynomOrderBox->value());
-            } else if (fn == "GaussAmp" && polynomOrderBox->isVisible()
+            } else if (fn == "GaussAmp" && !polynomOrderBox->isHidden()
                        && polynomOrderBox->value() > 1) {
                 lst = MultiPeakFit::generateParameterList(polynomOrderBox->value());
             } else if (fn == "Polynomial") {
@@ -2225,6 +2230,11 @@ void FitDialog::accept()
     }
 
     if (useBuiltInCat) {
+        const size_t minBuiltInSize =
+                std::max<size_t>({ paramsInit.size(), 8,
+                                   size_t(3 * std::max(1, polynomOrderBox->value()) + 1) });
+        if (paramsInit.size() < minBuiltInSize)
+            paramsInit.resize(minBuiltInSize, 1.0);
         fitBuiltInFunction(builtInFuncName, paramsInit.data());
         activeFitter = d_fitter;
     } else if (usePluginCat) {
@@ -2240,18 +2250,29 @@ void FitDialog::accept()
             activeFitter = nullptr;
             return;
         }
-        d_fitter->setInitialGuesses(paramsInit.data());
+        const int needP = d_fitter->numParameters();
+        if (needP > 0) {
+            if (int(paramsInit.size()) < needP)
+                paramsInit.resize(static_cast<size_t>(needP), 1.0);
+            d_fitter->setInitialGuesses(paramsInit.data());
+        }
     } else {
         d_fitter = new NonLinearFit(app, d_graph);
         activeFitter = d_fitter;
         ((NonLinearFit *)d_fitter)->setParametersList(parameters);
         ((NonLinearFit *)d_fitter)->setFormula(formula);
-        d_fitter->setInitialGuesses(paramsInit.data());
+        const int needP = d_fitter->numParameters();
+        if (needP > 0) {
+            if (int(paramsInit.size()) < needP)
+                paramsInit.resize(static_cast<size_t>(needP), 1.0);
+            d_fitter->setInitialGuesses(paramsInit.data());
+        }
     }
 
     if (d_fitter) {
+        const bool isPolyOrLinear = (dynamic_cast<PolynomialFit *>(d_fitter) != nullptr);
         for (int i = 0; i < rows && i < d_fitter->numParameters(); ++i) {
-            if (d_fitter->objectName() == tr("Polynomial") || d_fitter->objectName() == tr("Linear"))
+            if (isPolyOrLinear)
                 d_fitter->setInitialGuess(i, paramsInit[static_cast<size_t>(i)]);
             QCheckBox *cb = qobject_cast<QCheckBox *>(boxParams->cellWidget(i, 2));
             if (cb && cb->isChecked())
@@ -2346,9 +2367,16 @@ void FitDialog::accept()
             ((MultiPeakFit *)d_fitter)->setPeakCurvesColor(app->peakCurvesColor);
     }
 
+    const bool polyWillPaste = (dynamic_cast<PolynomialFit *>(d_fitter) != nullptr
+                                && dynamic_cast<LinearFit *>(d_fitter) == nullptr
+                                && app && app->pasteFitResultsToPlot);
     d_fitter->fit();
     if (!self || !d_fitter)
         return;
+    if (polyWillPaste && !d_fitter->results().empty() && d_fitter->chiSquare() >= 0.0)
+        d_fitter->setProperty("_tg_legend_pasted", true);
+    else
+        d_fitter->setProperty("_tg_legend_pasted", false);
     // F11: remember the built-in model for the "Recently used" list
     if (boxUseBuiltIn->isChecked()
         && (categoryBox->currentRow() == 1 || categoryBox->currentRow() >= 4)
@@ -2574,7 +2602,13 @@ void FitDialog::changeDataRange()
 void FitDialog::setSrcTables(QList<MyWidget *> *tables)
 {
     tableNamesBox->clear();
+    if (d_src_table && d_src_table != tables) {
+        delete d_src_table;
+        d_src_table = nullptr;
+    }
     if (!tables || tables->isEmpty()) {
+        delete tables;
+        d_src_table = nullptr;
         tableNamesBox->addItem(tr("No data tables"));
         colNamesBox->clear();
         colNamesBox->addItem(tr("No data tables"));
@@ -2585,15 +2619,19 @@ void FitDialog::setSrcTables(QList<MyWidget *> *tables)
     foreach (QWidget *i, *d_src_table)
         tableNamesBox->addItem(i->objectName());
 
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-    const QString curvePrefix =
-            boxCurve->currentText().split("_", Qt::SkipEmptyParts).value(0);
-#else
-    const QString curvePrefix =
-            boxCurve->currentText().split("_", QString::SkipEmptyParts).value(0);
-#endif
-    if (!curvePrefix.isEmpty())
-        tableNamesBox->setCurrentIndex(tableNamesBox->findText(curvePrefix));
+    const QString curveTitle = boxCurve->currentText();
+    int bestIdx = -1;
+    int bestLen = -1;
+    for (int i = 0; i < tableNamesBox->count(); ++i) {
+        const QString tName = tableNamesBox->itemText(i);
+        if (!tName.isEmpty() && curveTitle.startsWith(tName + QLatin1Char('_'))
+            && tName.length() > bestLen) {
+            bestLen = tName.length();
+            bestIdx = i;
+        }
+    }
+    if (bestIdx >= 0)
+        tableNamesBox->setCurrentIndex(bestIdx);
     selectSrcTable(tableNamesBox->currentIndex());
 }
 
@@ -2601,8 +2639,8 @@ void FitDialog::selectSrcTable(int tabnr)
 {
     colNamesBox->clear();
 
-    if (tabnr >= 0 && tabnr < d_src_table->count()) {
-        Table *t = (Table *)d_src_table->at(tabnr);
+    if (d_src_table && tabnr >= 0 && tabnr < d_src_table->count()) {
+        Table *t = qobject_cast<Table *>(d_src_table->at(tabnr));
         if (t)
             colNamesBox->addItems(t->colNames());
     }
@@ -2622,8 +2660,10 @@ void FitDialog::yErrorSourceChanged(int index)
 void FitDialog::closeEvent(QCloseEvent *e)
 {
     clearPreviewCurve();
-    if (d_fitter && plotLabelBox && plotLabelBox->isChecked() && d_graph)
-        d_fitter->showLegend();
+    if (d_fitter && plotLabelBox && plotLabelBox->isChecked() && d_graph) {
+        if (!d_fitter->property("_tg_legend_pasted").toBool())
+            d_fitter->showLegend();
+    }
 
     e->accept();
 }

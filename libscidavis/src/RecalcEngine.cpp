@@ -46,6 +46,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScopedValueRollback>
+#include <QSet>
 #include <QSettings>
 #include <QStatusBar>
 #include <QUrl>
@@ -566,12 +567,7 @@ int RecalcManager::registerLink(ApplicationWindow *app, Graph *g, Table *srcTabl
     if (!effSrcTable)
         return -1;
 
-    QString effOut = outCurveTitle;
-    if (effOut.isEmpty() && !g->fitCurvesList().isEmpty()) {
-        QwtPlotCurve *lastFit = g->fitCurvesList().last();
-        if (lastFit)
-            effOut = lastFit->title().text();
-    }
+    const QString effOut = outCurveTitle;
 
     connectLinkSources(g, effSrcTable);
 
@@ -723,24 +719,33 @@ void RecalcManager::onTableDataModified(Table *t, const QString &colName)
 
     pruneDeadLinks();
 
-    QVector<int> linkIds;
-    linkIds.reserve(d_links.size());
-    for (const RecalcLink &lnk : d_links) {
-        if (lnk.srcTable != t || lnk.graph.isNull() || lnk.resultTable == t)
-            continue;
-        linkIds.append(lnk.id);
-    }
+    QVector<int> queue;
+    QSet<int> queuedIds;
+    auto enqueueForTable = [&](Table *srcTbl) {
+        if (!srcTbl)
+            return;
+        for (const RecalcLink &lnk : d_links) {
+            if (lnk.srcTable != srcTbl || lnk.graph.isNull() || lnk.resultTable == srcTbl)
+                continue;
+            if (!queuedIds.contains(lnk.id)) {
+                queuedIds.insert(lnk.id);
+                queue.append(lnk.id);
+            }
+        }
+    };
+    enqueueForTable(t);
 
     const bool undoReplay = Table::isUndoRedoReplaying();
     QVector<QPointer<Graph>> touchedGraphs;
-    for (int id : linkIds) {
+    for (int qi = 0; qi < queue.size(); ++qi) {
+        const int id = queue[qi];
         const int idx = findLinkIndexById(id);
-        if (idx < 0 || d_links[idx].srcTable != t || d_links[idx].graph.isNull()
-            || d_links[idx].resultTable == t)
+        if (idx < 0 || d_links[idx].srcTable.isNull() || d_links[idx].graph.isNull()
+            || d_links[idx].resultTable == d_links[idx].srcTable)
             continue;
 
         QPointer<Graph> g = d_links[idx].graph;
-        if (!colName.isEmpty() && g)
+        if (d_links[idx].srcTable == t && !colName.isEmpty() && g)
             g->updateCurvesData(t, colName);
 
         const int curIdx = findLinkIndexById(id);
@@ -755,11 +760,28 @@ void RecalcManager::onTableDataModified(Table *t, const QString &colName)
                 d_has_deferred_dirty = true;
             if (!touchedGraphs.contains(g))
                 touchedGraphs.append(g);
+            // Also mark downstream chained links dirty (cycle-guarded by queuedIds).
+            if (Table *resTbl = d_links[curIdx].resultTable.data())
+                enqueueForTable(resTbl);
+            if (QwtPlotCurve *oc = g->curve(d_links[curIdx].outCurveTitle)) {
+                if (auto *dc = dynamic_cast<DataCurve *>(oc))
+                    enqueueForTable(dc->table());
+            }
         } else if (d_mode == Auto) {
             if (executeLinkById(id)) {
                 const int postIdx = findLinkIndexById(id);
-                if (postIdx >= 0)
+                if (postIdx >= 0) {
                     d_links[postIdx].dirty = false;
+                    // Propagate topological downstream recalculation (cycle-guarded by queuedIds).
+                    if (Table *resTbl = d_links[postIdx].resultTable.data())
+                        enqueueForTable(resTbl);
+                    if (g) {
+                        if (QwtPlotCurve *oc = g->curve(d_links[postIdx].outCurveTitle)) {
+                            if (auto *dc = dynamic_cast<DataCurve *>(oc))
+                                enqueueForTable(dc->table());
+                        }
+                    }
+                }
             }
             if (g && !touchedGraphs.contains(g))
                 touchedGraphs.append(g);
@@ -920,14 +942,20 @@ bool RecalcManager::executeLink(RecalcLink &link)
             return false;
         QString modelName =
                 link.params.value(QStringLiteral("model"), QStringLiteral("GaussAmp")).toString();
-        if (!fitter.setBuiltInModel(modelName)) {
+        QStringList resolvedParamNames;
+        if (fitter.setBuiltInModel(modelName)) {
+            resolvedParamNames = NonLinearFit::builtInModelParameters(modelName);
+        } else {
             QString formula = link.params.value(QStringLiteral("formula")).toString();
             QStringList pList = link.params.value(QStringLiteral("paramNames")).toStringList();
             if (!formula.isEmpty() && !pList.isEmpty()) {
                 fitter.setParametersList(pList);
                 fitter.setFormula(formula);
+                resolvedParamNames = pList;
             } else {
                 fitter.setBuiltInModel(QStringLiteral("GaussAmp"));
+                resolvedParamNames =
+                        NonLinearFit::builtInModelParameters(QStringLiteral("GaussAmp"));
             }
         }
         fitter.guessInitialValues();
@@ -937,7 +965,7 @@ bool RecalcManager::executeLink(RecalcLink &link)
         fitter.generateFunction(link.params.value(QStringLiteral("generateFunction"), true).toBool(),
                                 pts);
         fitter.fit();
-        fitParamNames = NonLinearFit::builtInModelParameters(modelName);
+        fitParamNames = resolvedParamNames;
         fitVals = fitter.results();
         fitErrs = fitter.errors();
         fitR2 = fitter.rSquare();
@@ -973,10 +1001,20 @@ bool RecalcManager::executeLink(RecalcLink &link)
         if (sf.error())
             return false;
         int pts = std::max(3, link.params.value(QStringLiteral("points"), 5).toInt());
-        int leftPts = link.params.value(QStringLiteral("leftPoints"), pts / 2).toInt();
-        sf.setSmoothPoints(pts, leftPts);
-        sf.setPolynomOrder(
-                std::clamp(link.params.value(QStringLiteral("polyOrder"), 2).toInt(), 1, pts - 1));
+        if (method == int(SmoothFilter::SavitzkyGolay)) {
+            int rightPts = link.params.contains(QStringLiteral("rightPoints"))
+                    ? std::max(1, link.params.value(QStringLiteral("rightPoints")).toInt())
+                    : std::max(1, pts / 2);
+            int leftPts = link.params.contains(QStringLiteral("leftPoints"))
+                    ? std::max(1, link.params.value(QStringLiteral("leftPoints")).toInt())
+                    : rightPts;
+            sf.setSmoothPoints(rightPts, leftPts);
+            const int maxOrder = std::max(1, leftPts + rightPts - 1);
+            sf.setPolynomOrder(
+                    std::clamp(link.params.value(QStringLiteral("polyOrder"), 2).toInt(), 1, maxOrder));
+        } else {
+            sf.setSmoothPoints(pts, 0);
+        }
         sf.run();
         break;
     }
@@ -1002,16 +1040,84 @@ bool RecalcManager::executeLink(RecalcLink &link)
         auto res = PiecewiseAndRobustFit::fitRobustOrQuantileLinear(
                 app, g, srcCurve,
                 static_cast<PiecewiseAndRobustFit::RobustMethod>(method), tau, false);
-        if (!res.converged || !res.fittedCurve)
+        auto cleanupFailedCurve = [&](QwtPlotCurve *fc) {
+            if (!fc || !g)
+                return;
+            Table *hidTbl = nullptr;
+            if (auto *dc = dynamic_cast<DataCurve *>(fc))
+                hidTbl = dc->table();
+            for (int ci = 0; ci < g->curves(); ++ci) {
+                if (g->curve(ci) == fc) {
+                    g->removeCurve(ci);
+                    break;
+                }
+            }
+            if (hidTbl && app && !hidTbl->isVisible()) {
+                bool stillUsed = false;
+                for (MyWidget *w : app->windowsList()) {
+                    auto *mlw = qobject_cast<MultiLayer *>(w);
+                    if (!mlw)
+                        continue;
+                    for (Graph *lg : mlw->layersList()) {
+                        if (!lg)
+                            continue;
+                        for (int ci = 0; ci < lg->curves(); ++ci) {
+                            if (auto *dc2 = dynamic_cast<DataCurve *>(lg->curve(ci))) {
+                                if (dc2->table() == hidTbl) {
+                                    stillUsed = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (stillUsed)
+                            break;
+                    }
+                    if (stillUsed)
+                        break;
+                }
+                if (!stillUsed) {
+                    hidTbl->askOnCloseEvent(false);
+                    app->closeWindow(hidTbl);
+                }
+            }
+        };
+        auto copyReportTable = [](Table *dst, Table *srcRep) {
+            if (!dst || !srcRep)
+                return;
+            const int rc = srcRep->numRows();
+            const int cc = srcRep->numCols();
+            dst->setNumRows(rc);
+            dst->setNumCols(cc);
+            for (int c = 0; c < cc; ++c) {
+                dst->setColName(c, srcRep->colLabel(c));
+                Column *srcCol = srcRep->column(c);
+                Column *dstCol = dst->column(c);
+                if (srcCol && dstCol) {
+                    if (dstCol->columnMode() != srcCol->columnMode())
+                        dstCol->setColumnMode(srcCol->columnMode());
+                    dstCol->setLongName(srcCol->longName());
+                    dstCol->setUnits(srcCol->units());
+                    dstCol->copy(srcCol);
+                } else {
+                    for (int r = 0; r < rc; ++r)
+                        dst->setText(r, c, srcRep->text(r, c));
+                }
+            }
+        };
+        if (!res.converged || !res.fittedCurve) {
+            if (res.fittedCurve)
+                cleanupFailedCurve(res.fittedCurve);
+            if (res.reportTable && res.reportTable != link.resultTable.data()) {
+                res.reportTable->askOnCloseEvent(false);
+                app->closeWindow(res.reportTable);
+            }
             return false;
-        fitParamNames = QStringList{ QStringLiteral("Intercept"), QStringLiteral("Slope") };
-        fitVals = { res.intercept, res.slope };
-        fitErrs = { res.interceptSE, res.slopeSE };
-        fitR2 = 0.0;
+        }
         if (res.reportTable) {
             if (!link.resultTable) {
                 link.resultTable = res.reportTable;
-            } else if (res.reportTable != link.resultTable) {
+            } else if (res.reportTable != link.resultTable.data()) {
+                copyReportTable(link.resultTable.data(), res.reportTable);
                 res.reportTable->askOnCloseEvent(false);
                 app->closeWindow(res.reportTable);
             }
@@ -1026,26 +1132,84 @@ bool RecalcManager::executeLink(RecalcLink &link)
                         .toInt(),
                 2, 3);
         auto res = PiecewiseAndRobustFit::fitPiecewiseLinear(app, g, srcCurve, segments, false);
-        if (!res.converged || !res.fittedCurve)
+        auto cleanupFailedCurve = [&](QwtPlotCurve *fc) {
+            if (!fc || !g)
+                return;
+            Table *hidTbl = nullptr;
+            if (auto *dc = dynamic_cast<DataCurve *>(fc))
+                hidTbl = dc->table();
+            for (int ci = 0; ci < g->curves(); ++ci) {
+                if (g->curve(ci) == fc) {
+                    g->removeCurve(ci);
+                    break;
+                }
+            }
+            if (hidTbl && app && !hidTbl->isVisible()) {
+                bool stillUsed = false;
+                for (MyWidget *w : app->windowsList()) {
+                    auto *mlw = qobject_cast<MultiLayer *>(w);
+                    if (!mlw)
+                        continue;
+                    for (Graph *lg : mlw->layersList()) {
+                        if (!lg)
+                            continue;
+                        for (int ci = 0; ci < lg->curves(); ++ci) {
+                            if (auto *dc2 = dynamic_cast<DataCurve *>(lg->curve(ci))) {
+                                if (dc2->table() == hidTbl) {
+                                    stillUsed = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (stillUsed)
+                            break;
+                    }
+                    if (stillUsed)
+                        break;
+                }
+                if (!stillUsed) {
+                    hidTbl->askOnCloseEvent(false);
+                    app->closeWindow(hidTbl);
+                }
+            }
+        };
+        auto copyReportTable = [](Table *dst, Table *srcRep) {
+            if (!dst || !srcRep)
+                return;
+            const int rc = srcRep->numRows();
+            const int cc = srcRep->numCols();
+            dst->setNumRows(rc);
+            dst->setNumCols(cc);
+            for (int c = 0; c < cc; ++c) {
+                dst->setColName(c, srcRep->colLabel(c));
+                Column *srcCol = srcRep->column(c);
+                Column *dstCol = dst->column(c);
+                if (srcCol && dstCol) {
+                    if (dstCol->columnMode() != srcCol->columnMode())
+                        dstCol->setColumnMode(srcCol->columnMode());
+                    dstCol->setLongName(srcCol->longName());
+                    dstCol->setUnits(srcCol->units());
+                    dstCol->copy(srcCol);
+                } else {
+                    for (int r = 0; r < rc; ++r)
+                        dst->setText(r, c, srcRep->text(r, c));
+                }
+            }
+        };
+        if (!res.converged || !res.fittedCurve) {
+            if (res.fittedCurve)
+                cleanupFailedCurve(res.fittedCurve);
+            if (res.reportTable && res.reportTable != link.resultTable.data()) {
+                res.reportTable->askOnCloseEvent(false);
+                app->closeWindow(res.reportTable);
+            }
             return false;
-        fitParamNames.clear();
-        fitVals.clear();
-        fitParamNames << QStringLiteral("Intercept0");
-        fitVals.push_back(res.intercept0);
-        for (int i = 0; i < res.breakpointsX.size(); ++i) {
-            fitParamNames << QStringLiteral("BreakpointX%1").arg(i + 1);
-            fitVals.push_back(res.breakpointsX[i]);
         }
-        for (int i = 0; i < res.slopes.size(); ++i) {
-            fitParamNames << QStringLiteral("Slope%1").arg(i + 1);
-            fitVals.push_back(res.slopes[i]);
-        }
-        fitErrs.assign(fitVals.size(), 0.0);
-        fitR2 = res.rSquare;
         if (res.reportTable) {
             if (!link.resultTable) {
                 link.resultTable = res.reportTable;
-            } else if (res.reportTable != link.resultTable) {
+            } else if (res.reportTable != link.resultTable.data()) {
+                copyReportTable(link.resultTable.data(), res.reportTable);
                 res.reportTable->askOnCloseEvent(false);
                 app->closeWindow(res.reportTable);
             }
@@ -1109,8 +1273,36 @@ bool RecalcManager::executeLink(RecalcLink &link)
             addedCurves.append(c);
     }
 
-    // True if some curve still on the graph (other than the ones in `ignore`) uses table t.
+    // True if any curve on any graph in the project (other than `ignore`) or another link uses table t.
     auto tableStillUsed = [&](Table *t, const QList<QwtPlotCurve *> &ignore) -> bool {
+        if (!t)
+            return false;
+        for (const RecalcLink &other : d_links) {
+            if (other.id == link.id)
+                continue;
+            if (other.srcTable == t || other.resultTable == t)
+                return true;
+        }
+        if (app) {
+            for (MyWidget *mw : app->windowsList()) {
+                auto *ml = qobject_cast<MultiLayer *>(mw);
+                if (!ml)
+                    continue;
+                for (Graph *lg : ml->layersList()) {
+                    if (!lg)
+                        continue;
+                    for (int i = 0; i < lg->curves(); ++i) {
+                        QwtPlotCurve *c = lg->curve(i);
+                        if (!c || (lg == g && ignore.contains(c)))
+                            continue;
+                        if (auto *dc = dynamic_cast<DataCurve *>(c)) {
+                            if (dc->table() == t)
+                                return true;
+                        }
+                    }
+                }
+            }
+        }
         for (int i = 0; i < g->curves(); ++i) {
             QwtPlotCurve *c = g->curve(i);
             if (!c || ignore.contains(c))
@@ -1160,17 +1352,17 @@ bool RecalcManager::executeLink(RecalcLink &link)
         return false;
     }
 
-    // Success: now (and only now) replace the previous output.
-    const bool isAutoSignalTable = (link.op == OpIIRFilter || link.op == OpSavGolDeriv
-                                    || link.op == OpWaveletDenoise);
-    for (QwtPlotCurve *ec : oldExtraCurves) {
-        if (!addedCurves.contains(ec))
-            retireCurve(ec, newTables, false);
-    }
-    if (oldOutCurve && !addedCurves.contains(oldOutCurve))
-        retireCurve(oldOutCurve, newTables, isAutoSignalTable);
+    // Success: rebind any downstream chained links referencing the replaced output curve/table
+    // before retiring the old curve so chains (e.g., Smooth -> Fit) stay connected.
+    Table *oldOutTable = nullptr;
+    if (auto *oldDc = dynamic_cast<DataCurve *>(oldOutCurve))
+        oldOutTable = oldDc->table();
 
     QwtPlotCurve *newPrimary = addedCurves.first();
+    Table *newOutTable = nullptr;
+    if (auto *newDc = dynamic_cast<DataCurve *>(newPrimary))
+        newOutTable = newDc->table();
+
     QString primaryTitle = newPrimary->title().text();
     // Keep the title stable across recalculations: the requested title first, otherwise the
     // title of the output being replaced.
@@ -1184,6 +1376,28 @@ bool RecalcManager::executeLink(RecalcLink &link)
     }
     if (hasSavedPen)
         newPrimary->setPen(savedPen);
+
+    if (oldOutTable && newOutTable && oldOutTable != newOutTable) {
+        for (RecalcLink &other : d_links) {
+            if (other.id == link.id)
+                continue;
+            if (other.srcTable == oldOutTable && other.graph == g
+                && (other.srcCurveTitle == oldOutTitle || other.srcCurveTitle == primaryTitle)) {
+                other.srcTable = newOutTable;
+                other.srcCurveTitle = primaryTitle;
+                connectLinkSources(other.graph.data(), newOutTable);
+            }
+        }
+    }
+
+    const bool isAutoSignalTable = (link.op == OpIIRFilter || link.op == OpSavGolDeriv
+                                    || link.op == OpWaveletDenoise);
+    for (QwtPlotCurve *ec : oldExtraCurves) {
+        if (!addedCurves.contains(ec))
+            retireCurve(ec, newTables, false);
+    }
+    if (oldOutCurve && !addedCurves.contains(oldOutCurve))
+        retireCurve(oldOutCurve, newTables, isAutoSignalTable);
 
     link.outCurveTitle = primaryTitle;
     link.extraCurveTitles.clear();
@@ -1226,36 +1440,54 @@ void RecalcManager::updateLockBadge(Graph *g)
             if (!safeG)
                 return;
             Graph *grp = safeG.data();
-            if (hasDirtyLinks(grp)) {
+            if (hasDirtyLinks(grp) && lastError(grp).isEmpty()) {
                 recalculateAll(grp);
                 return;
             }
-            QMenu menu(grp);
-            QAction *actNow = menu.addAction(QObject::tr("Recalculate Layer Now"));
-            menu.addSeparator();
-            QAction *actAuto = menu.addAction(QObject::tr("Auto Recalculate (Green Lock)"));
+            QPointer<RecalcManager> self(this);
+            QPointer<QMenu> menu = new QMenu(grp);
+            QAction *actNow = menu->addAction(QObject::tr("Recalculate Layer Now"));
+            menu->addSeparator();
+            QAction *actAuto = menu->addAction(QObject::tr("Auto Recalculate (Green Lock)"));
             actAuto->setCheckable(true);
             actAuto->setChecked(d_mode == Auto);
-            QAction *actManual = menu.addAction(QObject::tr("Manual Recalculate"));
+            QAction *actManual = menu->addAction(QObject::tr("Manual Recalculate"));
             actManual->setCheckable(true);
             actManual->setChecked(d_mode == Manual);
-            QAction *actDisable = menu.addAction(QObject::tr("Disable Recalculation"));
+            QAction *actDisable = menu->addAction(QObject::tr("Disable Recalculation"));
             actDisable->setCheckable(true);
             actDisable->setChecked(d_mode == Disabled);
-            menu.addSeparator();
-            QAction *actClear = menu.addAction(QObject::tr("Remove Recalculation Links on Graph"));
+            menu->addSeparator();
+            QAction *actClear = menu->addAction(QObject::tr("Remove Recalculation Links on Graph"));
 
-            QAction *picked = menu.exec(QCursor::pos());
-            if (picked == actNow)
-                recalculateAll(grp);
-            else if (picked == actAuto)
+            QAction *picked = menu->exec(QCursor::pos());
+            int actionId = 0;
+            if (!menu.isNull() && picked) {
+                if (picked == actNow)
+                    actionId = 1;
+                else if (picked == actAuto)
+                    actionId = 2;
+                else if (picked == actManual)
+                    actionId = 3;
+                else if (picked == actDisable)
+                    actionId = 4;
+                else if (picked == actClear)
+                    actionId = 5;
+            }
+            if (menu)
+                delete menu.data();
+            if (!self || !safeG)
+                return;
+            if (actionId == 1)
+                recalculateAll(safeG.data());
+            else if (actionId == 2)
                 setRecalcMode(Auto);
-            else if (picked == actManual)
+            else if (actionId == 3)
                 setRecalcMode(Manual);
-            else if (picked == actDisable)
+            else if (actionId == 4)
                 setRecalcMode(Disabled);
-            else if (picked == actClear)
-                removeLinksForGraph(grp);
+            else if (actionId == 5)
+                removeLinksForGraph(safeG.data());
         });
     }
 
@@ -1562,6 +1794,7 @@ void RecalcManager::repeatForAllCurves(ApplicationWindow *app, Graph *g, OpType 
         const QStringList before = g->curvesList();
         const QColor outColor = kBatchColors[idx % 6];
 
+        Table *opResultTbl = nullptr;
         switch (op) {
         case OpLinearFit: {
             LinearFit fitter(effApp, g, srcTitle);
@@ -1590,8 +1823,18 @@ void RecalcManager::repeatForAllCurves(ApplicationWindow *app, Graph *g, OpType 
             NonLinearFit fitter(effApp, g, srcTitle);
             if (!fitter.error()) {
                 fitter.setColor(outColor);
-                fitter.setBuiltInModel(
-                        params.value(QStringLiteral("model"), QStringLiteral("GaussAmp")).toString());
+                const QString modelName =
+                        params.value(QStringLiteral("model"), QStringLiteral("GaussAmp")).toString();
+                if (!fitter.setBuiltInModel(modelName)) {
+                    const QString formula = params.value(QStringLiteral("formula")).toString();
+                    const QStringList pList = params.value(QStringLiteral("paramNames")).toStringList();
+                    if (!formula.isEmpty() && !pList.isEmpty()) {
+                        fitter.setParametersList(pList);
+                        fitter.setFormula(formula);
+                    } else {
+                        fitter.setBuiltInModel(QStringLiteral("GaussAmp"));
+                    }
+                }
                 fitter.guessInitialValues();
                 fitter.generateFunction(true, std::max(20, effApp->fitPoints));
                 fitter.fit();
@@ -1615,12 +1858,25 @@ void RecalcManager::repeatForAllCurves(ApplicationWindow *app, Graph *g, OpType 
             int method =
                     params.value(QStringLiteral("method"), int(SmoothFilter::SavitzkyGolay)).toInt();
             SmoothFilter sf(effApp, g, srcTitle, method);
+            sf.setSilent(true);
             if (!sf.error()) {
                 sf.setColor(outColor);
                 int pts = std::max(3, params.value(QStringLiteral("points"), 5).toInt());
-                sf.setSmoothPoints(pts, pts / 2);
-                sf.setPolynomOrder(std::clamp(params.value(QStringLiteral("polyOrder"), 2).toInt(),
-                                              1, pts - 1));
+                if (method == int(SmoothFilter::SavitzkyGolay)) {
+                    int rightPts = params.contains(QStringLiteral("rightPoints"))
+                            ? std::max(1, params.value(QStringLiteral("rightPoints")).toInt())
+                            : std::max(1, pts / 2);
+                    int leftPts = params.contains(QStringLiteral("leftPoints"))
+                            ? std::max(1, params.value(QStringLiteral("leftPoints")).toInt())
+                            : rightPts;
+                    sf.setSmoothPoints(rightPts, leftPts);
+                    const int maxOrder = std::max(1, leftPts + rightPts - 1);
+                    sf.setPolynomOrder(
+                            std::clamp(params.value(QStringLiteral("polyOrder"), 2).toInt(), 1,
+                                       maxOrder));
+                } else {
+                    sf.setSmoothPoints(pts, 0);
+                }
                 sf.run();
             }
             break;
@@ -1646,8 +1902,54 @@ void RecalcManager::repeatForAllCurves(ApplicationWindow *app, Graph *g, OpType 
             auto res = PiecewiseAndRobustFit::fitRobustOrQuantileLinear(
                     effApp, g, srcTitle,
                     static_cast<PiecewiseAndRobustFit::RobustMethod>(method), tau, false);
-            if (res.fittedCurve)
+            if (res.converged && res.fittedCurve) {
                 res.fittedCurve->setPen(QPen(outColor, 2));
+                opResultTbl = res.reportTable;
+            } else {
+                if (res.fittedCurve) {
+                    Table *hidTbl = nullptr;
+                    if (auto *dc = dynamic_cast<DataCurve *>(res.fittedCurve))
+                        hidTbl = dc->table();
+                    for (int ci = 0; ci < g->curves(); ++ci) {
+                        if (g->curve(ci) == res.fittedCurve) {
+                            g->removeCurve(ci);
+                            break;
+                        }
+                    }
+                    if (hidTbl && effApp && !hidTbl->isVisible()) {
+                        bool stillUsed = false;
+                        for (MyWidget *w : effApp->windowsList()) {
+                            auto *mlw = qobject_cast<MultiLayer *>(w);
+                            if (!mlw)
+                                continue;
+                            for (Graph *lg : mlw->layersList()) {
+                                if (!lg)
+                                    continue;
+                                for (int ci = 0; ci < lg->curves(); ++ci) {
+                                    if (auto *dc2 = dynamic_cast<DataCurve *>(lg->curve(ci))) {
+                                        if (dc2->table() == hidTbl) {
+                                            stillUsed = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (stillUsed)
+                                    break;
+                            }
+                            if (stillUsed)
+                                break;
+                        }
+                        if (!stillUsed) {
+                            hidTbl->askOnCloseEvent(false);
+                            effApp->closeWindow(hidTbl);
+                        }
+                    }
+                }
+                if (res.reportTable) {
+                    res.reportTable->askOnCloseEvent(false);
+                    effApp->closeWindow(res.reportTable);
+                }
+            }
             break;
         }
         case OpPiecewiseFit: {
@@ -1658,8 +1960,54 @@ void RecalcManager::repeatForAllCurves(ApplicationWindow *app, Graph *g, OpType 
                     2, 3);
             auto res = PiecewiseAndRobustFit::fitPiecewiseLinear(effApp, g, srcTitle, segments,
                                                                  false);
-            if (res.fittedCurve)
+            if (res.converged && res.fittedCurve) {
                 res.fittedCurve->setPen(QPen(outColor, 2));
+                opResultTbl = res.reportTable;
+            } else {
+                if (res.fittedCurve) {
+                    Table *hidTbl = nullptr;
+                    if (auto *dc = dynamic_cast<DataCurve *>(res.fittedCurve))
+                        hidTbl = dc->table();
+                    for (int ci = 0; ci < g->curves(); ++ci) {
+                        if (g->curve(ci) == res.fittedCurve) {
+                            g->removeCurve(ci);
+                            break;
+                        }
+                    }
+                    if (hidTbl && effApp && !hidTbl->isVisible()) {
+                        bool stillUsed = false;
+                        for (MyWidget *w : effApp->windowsList()) {
+                            auto *mlw = qobject_cast<MultiLayer *>(w);
+                            if (!mlw)
+                                continue;
+                            for (Graph *lg : mlw->layersList()) {
+                                if (!lg)
+                                    continue;
+                                for (int ci = 0; ci < lg->curves(); ++ci) {
+                                    if (auto *dc2 = dynamic_cast<DataCurve *>(lg->curve(ci))) {
+                                        if (dc2->table() == hidTbl) {
+                                            stillUsed = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (stillUsed)
+                                    break;
+                            }
+                            if (stillUsed)
+                                break;
+                        }
+                        if (!stillUsed) {
+                            hidTbl->askOnCloseEvent(false);
+                            effApp->closeWindow(hidTbl);
+                        }
+                    }
+                }
+                if (res.reportTable) {
+                    res.reportTable->askOnCloseEvent(false);
+                    effApp->closeWindow(res.reportTable);
+                }
+            }
             break;
         }
         case OpIIRFilter: {
@@ -1716,7 +2064,7 @@ void RecalcManager::repeatForAllCurves(ApplicationWindow *app, Graph *g, OpType 
             }
         }
         if (!newOut.isEmpty() && srcTbl && mgr->recalcMode() != Disabled)
-            mgr->registerLink(effApp, g, srcTbl, srcTitle, newOut, op, params);
+            mgr->registerLink(effApp, g, srcTbl, srcTitle, newOut, op, params, opResultTbl);
     }
 
     g->replot();

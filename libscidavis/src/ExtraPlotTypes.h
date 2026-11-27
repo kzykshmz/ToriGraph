@@ -13,6 +13,8 @@
 #include <QString>
 #include <QVector>
 
+#include <limits>
+
 class ApplicationWindow;
 class Graph;
 class Matrix;
@@ -70,10 +72,9 @@ public:
         MultiLayer *plot = nullptr;
     };
     //! \a binWidth <= 0 uses the histogram's automatic binning.
-    static HistogramCumulativeResult plotHistogramCumulative(ApplicationWindow *app, Table *t,
-                                                             const QString &col,
-                                                             double binWidth = 0.0,
-                                                             double begin = 0.0);
+    static HistogramCumulativeResult plotHistogramCumulative(
+            ApplicationWindow *app, Table *t, const QString &col, double binWidth = 0.0,
+            double begin = std::numeric_limits<double>::quiet_NaN());
 
     // ---- 4. Probability plots -------------------------------------------------------------
     enum ProbabilityDistribution { LogNormal = 0, Gumbel = 1 };

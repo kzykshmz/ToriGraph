@@ -41,6 +41,7 @@ public:
                    bool expGrowth = false);
     ExponentialFit(ApplicationWindow *parent, Graph *g, const QString &curveTitle, double start,
                    double end, bool expGrowth = false);
+    void guessInitialValues() override;
 
 protected:
     bool evaluateModelCurve(const std::vector<double> &solverPar, std::vector<double> &X,

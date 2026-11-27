@@ -85,6 +85,7 @@ static const ModularSuiteEntry kModularSuites[] = {
     { 112, "runSuite112HeatmapHolesAndHistogramBins", &runSuite112HeatmapHolesAndHistogramBins },
     { 113, "runSuite113SwarmAuditRegressions", &runSuite113SwarmAuditRegressions },
     { 114, "runSuite114DeepSwarmAuditRegressions", &runSuite114DeepSwarmAuditRegressions },
+    { 115, "runSuite115Campaign2SwarmAuditRegressions", &runSuite115Campaign2SwarmAuditRegressions },
 };
 
 static const ModularSuiteEntry *findModularSuite(int id)
@@ -199,7 +200,7 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
                 const int sid = part.trimmed().toInt(&ok);
                 if (!ok || !findModularSuite(sid)) {
                     std::cerr << "[FAIL] Unknown modular suite id in " << a.toStdString()
-                              << " (use --list-suites to inspect valid IDs 36..114)\n";
+                              << " (use --list-suites to inspect valid IDs 36..115)\n";
                     mw->savedProject();
                     mw->setOleEmbeddedMode(true);
                     delete mw;
@@ -5646,6 +5647,9 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
         return 1;
     mw->savedProject();
     if (runSuite114DeepSwarmAuditRegressions(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite115Campaign2SwarmAuditRegressions(mw) != 0)
         return 1;
     mw->savedProject();
     std::cout << "[PASS] All 53 ToriGraph OriginPro Parity, Phase 12 .opju Importer/Graph-Math/Modern-UI Gate, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";

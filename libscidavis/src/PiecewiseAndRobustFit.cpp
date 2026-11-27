@@ -527,9 +527,9 @@ struct DialogPreviewCurveGuard
         if (curve) {
             if (graph && graph->plotWidget()) {
                 curve->detach();
+                delete curve;
                 graph->replot();
             }
-            delete curve;
             curve = nullptr;
         }
     }
@@ -978,10 +978,11 @@ static bool computeRobustOrQuantileCore(const std::vector<double> &xv,
     const double ySpan = (yMax > yMin) ? (yMax - yMin) : 0.0;
     double yScale = std::max(ySpan, yAbsMax);
     if (!(yScale > 0.0) || !std::isfinite(yScale))
-        yScale = std::numeric_limits<double>::min();
+        yScale = 1.0;
     const double madRaw = computeMADScale(yv);
-    const double madY = (madRaw > 1e-12 * yScale && std::isfinite(madRaw)) ? madRaw
-                                                                            : std::max(1e-12 * yScale, std::numeric_limits<double>::min());
+    const double madY = (madRaw > 1e-12 * yScale && std::isfinite(madRaw))
+            ? madRaw
+            : std::max(1e-12 * yScale, 1e-150);
     const double minScaleFloor = 1e-7 * madY;
 
     std::vector<double> resid(n, 0.0);
@@ -1034,7 +1035,7 @@ static bool computeRobustOrQuantileCore(const std::vector<double> &xv,
                 }
             }
         } else {
-            const double epsPinball = std::max(1e-12 * yScale, 1e-6 * madY);
+            const double epsPinball = std::max({ 1e-12 * yScale, 1e-6 * madY, 1e-150 });
             for (size_t i = 0; i < n; ++i) {
                 const double asym = (resid[i] >= 0.0) ? tau : (1.0 - tau);
                 weights[i] = asym / std::max(std::fabs(resid[i]), epsPinball);
@@ -1184,6 +1185,63 @@ static bool computeRobustOrQuantileCore(const std::vector<double> &xv,
                 res.slopeSE = std::sqrt(std::max(0.0, omega2 * invXtX_11));
             }
         }
+        return usable;
+    }
+
+    if (method == PiecewiseAndRobustFit::HuberM) {
+        // Huber (1981) / R MASS::rlm bounded-influence asymptotic variance:
+        //   Var(beta_hat) = K^2 * [s^2 * (1/(n-2)) * sum(psi(r_i/s)^2) / m^2] * (X^T X)^-1
+        // where psi(u) = clamp(u, -c, c), m = mean(psi'(u_i)), K = 1 + (2/n)*(1-m)/m.
+        // Using raw weighted chisq (sum w_i r_i^2 = c*s*|r_i|) diverges linearly with outlier size.
+        res.interceptSE = nanSE;
+        res.slopeSE = nanSE;
+        if (!usable || degenerateWeights || !haveCov || n <= 2)
+            return usable;
+        double meanX = 0.0;
+        for (double xi : xv)
+            meanX += xi;
+        meanX /= double(n);
+        double sxx = 0.0;
+        for (double xi : xv) {
+            const double dx = xi - meanX;
+            sxx += dx * dx;
+        }
+        if (!(sxx > 0.0) || !std::isfinite(sxx))
+            return usable;
+        const double rTiny = 1e-12 * std::max(yScale, 1e-300);
+        if (!(curScaleMAD > rTiny)) {
+            double maxAbsR = 0.0;
+            for (double ri : resid)
+                maxAbsR = std::max(maxAbsR, std::fabs(ri));
+            if (!(maxAbsR > rTiny)) {
+                res.interceptSE = 0.0;
+                res.slopeSE = 0.0;
+                return usable;
+            }
+        }
+        const double sFinal = std::max(curScaleMAD, minScaleFloor);
+        const double cHuber = 1.345;
+        double sumPsi2 = 0.0;
+        int nInlier = 0;
+        for (double ri : resid) {
+            const double u = ri / sFinal;
+            const double psi = std::clamp(u, -cHuber, cHuber);
+            sumPsi2 += psi * psi;
+            if (std::fabs(u) <= cHuber)
+                ++nInlier;
+        }
+        const double m = double(nInlier) / double(n);
+        if (!(m > 1e-12) || !std::isfinite(sumPsi2))
+            return usable;
+        const double kappa = 1.0 + (2.0 / double(n)) * ((1.0 - m) / m);
+        const double huberVar =
+                (kappa * kappa) * (sFinal * sFinal * (sumPsi2 / double(n - 2))) / (m * m);
+        if (!std::isfinite(huberVar) || huberVar < 0.0)
+            return usable;
+        const double invXtX_00 = (1.0 / double(n)) + (meanX * meanX) / sxx;
+        const double invXtX_11 = 1.0 / sxx;
+        res.interceptSE = std::sqrt(std::max(0.0, huberVar * invXtX_00));
+        res.slopeSE = std::sqrt(std::max(0.0, huberVar * invXtX_11));
         return usable;
     }
 
@@ -2922,9 +2980,9 @@ void PiecewiseAndRobustFit::showPiecewiseFitDialog(ApplicationWindow *app, Graph
 
     const int rc = dlg.exec();
     previewGuard.clear();
-    if (rc == QDialog::Accepted) {
-        const auto out = fitPiecewiseLinear(app, g, curveCombo->currentText(), segSpin->value(),
-                                            annotateChk->isChecked());
+    if (rc == QDialog::Accepted && previewGuard.graph) {
+        const auto out = fitPiecewiseLinear(app, previewGuard.graph.data(), curveCombo->currentText(),
+                                            segSpin->value(), annotateChk->isChecked());
         if (!out.converged) {
             QMessageBox::warning(app, QObject::tr("Piecewise Linear Fit"),
                                  QObject::tr("Piecewise fit could not converge on the selected curve."));
@@ -3033,9 +3091,10 @@ void PiecewiseAndRobustFit::showRobustFitDialog(ApplicationWindow *app, Graph *g
 
     const int rc = dlg.exec();
     previewGuard.clear();
-    if (rc == QDialog::Accepted) {
+    if (rc == QDialog::Accepted && previewGuard.graph) {
         const auto m = static_cast<RobustMethod>(methodCombo->currentData().toInt());
-        const auto out = fitRobustOrQuantileLinear(app, g, curveCombo->currentText(), m,
+        const auto out = fitRobustOrQuantileLinear(app, previewGuard.graph.data(),
+                                                   curveCombo->currentText(), m,
                                                    tauSpin->value(), annotateChk->isChecked());
         if (!out.converged) {
             QMessageBox::warning(app, QObject::tr("Robust / Quantile Regression"),
@@ -3056,6 +3115,7 @@ void PiecewiseAndRobustFit::showCompareDatasetsDialog(ApplicationWindow *app, Gr
         return;
     }
 
+    QPointer<Graph> safeGraph(g);
     QDialog dlg(app);
     dlg.setWindowTitle(QObject::tr("Compare Datasets (Extra-Sum-of-Squares F-Test)"));
     dlg.setMinimumWidth(420);
@@ -3105,7 +3165,7 @@ void PiecewiseAndRobustFit::showCompareDatasetsDialog(ApplicationWindow *app, Gr
     QObject::connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
     mainLay->addWidget(btns);
 
-    if (dlg.exec() == QDialog::Accepted) {
+    if (dlg.exec() == QDialog::Accepted && safeGraph) {
         QStringList chosen;
         for (int i = 0; i < listWidget->count(); ++i) {
             if (listWidget->item(i)->checkState() == Qt::Checked)
@@ -3119,7 +3179,7 @@ void PiecewiseAndRobustFit::showCompareDatasetsDialog(ApplicationWindow *app, Gr
         QString modelKey = modelCombo->currentData().toString();
         if (modelKey.isEmpty())
             modelKey = modelCombo->currentText();
-        const auto out = compareDatasets(app, g, chosen, modelKey);
+        const auto out = compareDatasets(app, safeGraph.data(), chosen, modelKey);
         if (!out.valid) {
             QMessageBox::warning(app, QObject::tr("Compare Datasets"),
                                  QObject::tr("Dataset comparison failed (insufficient degrees of freedom or model mismatch)."));
@@ -3132,13 +3192,11 @@ void PiecewiseAndRobustFit::showMLRDialog(ApplicationWindow *app)
     if (!app)
         return;
 
-    QList<Table *> tables;
-    if (app->tableList()) {
-        for (MyWidget *w : *app->tableList()) {
-            if (auto *t = qobject_cast<Table *>(w)) {
-                if (t->numCols() >= 2)
-                    tables.append(t);
-            }
+    QList<QPointer<Table>> tables;
+    for (MyWidget *w : app->windowsList()) {
+        if (auto *t = qobject_cast<Table *>(w)) {
+            if (t->numCols() >= 2)
+                tables.append(QPointer<Table>(t));
         }
     }
     if (tables.isEmpty()) {
@@ -3155,7 +3213,7 @@ void PiecewiseAndRobustFit::showMLRDialog(ApplicationWindow *app)
     auto *form = new QFormLayout();
 
     auto *tblCombo = new QComboBox(&dlg);
-    for (Table *t : tables)
+    for (const QPointer<Table> &t : tables)
         tblCombo->addItem(t->name());
     form->addRow(QObject::tr("Worksheet:"), tblCombo);
 
@@ -3178,9 +3236,11 @@ void PiecewiseAndRobustFit::showMLRDialog(ApplicationWindow *app)
         const int idx = tblCombo->currentIndex();
         if (idx < 0 || idx >= tables.size())
             return;
-        Table *t = tables[idx];
+        Table *t = tables[idx].data();
         yCombo->clear();
         xList->clear();
+        if (!t)
+            return;
         for (int c = 0; c < t->numCols(); ++c) {
             const QString lbl = t->colLabel(c);
             yCombo->addItem(lbl);
@@ -3210,7 +3270,9 @@ void PiecewiseAndRobustFit::showMLRDialog(ApplicationWindow *app)
         const int idx = tblCombo->currentIndex();
         if (idx < 0 || idx >= tables.size())
             return;
-        Table *t = tables[idx];
+        Table *t = tables[idx].data();
+        if (!t)
+            return;
         const QString yName = yCombo->currentText();
         QStringList xNames;
         for (int i = 0; i < xList->count(); ++i) {
@@ -3235,13 +3297,11 @@ void PiecewiseAndRobustFit::showLogisticRegressionDialog(ApplicationWindow *app)
     if (!app)
         return;
 
-    QList<Table *> tables;
-    if (app->tableList()) {
-        for (MyWidget *w : *app->tableList()) {
-            if (auto *t = qobject_cast<Table *>(w)) {
-                if (t->numCols() >= 2)
-                    tables.append(t);
-            }
+    QList<QPointer<Table>> tables;
+    for (MyWidget *w : app->windowsList()) {
+        if (auto *t = qobject_cast<Table *>(w)) {
+            if (t->numCols() >= 2)
+                tables.append(QPointer<Table>(t));
         }
     }
     if (tables.isEmpty()) {
@@ -3259,7 +3319,7 @@ void PiecewiseAndRobustFit::showLogisticRegressionDialog(ApplicationWindow *app)
     auto *form = new QFormLayout();
 
     auto *tblCombo = new QComboBox(&dlg);
-    for (Table *t : tables)
+    for (const QPointer<Table> &t : tables)
         tblCombo->addItem(t->name());
     form->addRow(QObject::tr("Worksheet:"), tblCombo);
 
@@ -3283,9 +3343,11 @@ void PiecewiseAndRobustFit::showLogisticRegressionDialog(ApplicationWindow *app)
         const int idx = tblCombo->currentIndex();
         if (idx < 0 || idx >= tables.size())
             return;
-        Table *t = tables[idx];
+        Table *t = tables[idx].data();
         yCombo->clear();
         xList->clear();
+        if (!t)
+            return;
         for (int c = 0; c < t->numCols(); ++c) {
             const QString lbl = t->colLabel(c);
             yCombo->addItem(lbl);
@@ -3316,7 +3378,9 @@ void PiecewiseAndRobustFit::showLogisticRegressionDialog(ApplicationWindow *app)
         const int idx = tblCombo->currentIndex();
         if (idx < 0 || idx >= tables.size())
             return;
-        Table *t = tables[idx];
+        Table *t = tables[idx].data();
+        if (!t)
+            return;
         const QString yName = yCombo->currentText();
         QStringList xNames;
         for (int i = 0; i < xList->count(); ++i) {

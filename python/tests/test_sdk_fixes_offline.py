@@ -910,3 +910,159 @@ def test_coerce_tabular_input_rejects_empty_and_duplicate_col_names() -> None:
     # Empty input with empty col_names remains valid
     cols, order, *_ = tg_client._coerce_tabular_input({}, col_names=[])
     assert cols == {} and order == []
+
+
+def test_session_batch_commands_honors_raise_on_error() -> None:
+    """Campaign 2: Session.batch(commands=..., raise_on_error=True) must raise RpcError on ok=False."""
+    fail_resp = {
+        "ok": False,
+        "completed": 0,
+        "total": 1,
+        "rolled_back": True,
+        "error": {"code": -32602, "message": "Invalid params in step 0"},
+    }
+    t1 = MockTransport([_ok(fail_resp)])
+    s1 = Session(t1)
+    with pytest.raises(RpcError) as excinfo:
+        s1.batch([{"method": "table.create", "params": {"rows": -1}}])
+    assert excinfo.value.code == -32602
+    assert "Invalid params" in str(excinfo.value)
+
+    # raise_on_error=False returns the failure dict without raising
+    t2 = MockTransport([_ok(fail_resp)])
+    s2 = Session(t2)
+    res = s2.batch(
+        [{"method": "table.create", "params": {"rows": -1}}],
+        raise_on_error=False,
+    )
+    assert res["ok"] is False
+    assert res["rolled_back"] is True
+
+
+def test_coerce_tabular_input_ndarray_col_names_validation_and_zero_cols() -> None:
+    """Campaign 2: 1D/2D ndarray inputs must validate col_names through _apply_col_names_override."""
+    class _FakeDtype:
+        names = None
+
+    class _FakeArray:
+        def __init__(self, rows: list, shape: tuple[int, ...]) -> None:
+            self._rows = rows
+            self.shape = shape
+            self.ndim = len(shape)
+            self.dtype = _FakeDtype()
+
+        def tolist(self) -> list:
+            return self._rows
+
+    # 1D array: mismatch or empty col_names must raise ValueError
+    arr1d = _FakeArray([1.0, 2.0, 3.0], (3,))
+    with pytest.raises(ValueError):
+        tg_client._coerce_tabular_input(arr1d, col_names=["A", "B"])
+    with pytest.raises(ValueError, match="empty"):
+        tg_client._coerce_tabular_input(arr1d, col_names=[])
+    cols1, order1, *_ = tg_client._coerce_tabular_input(arr1d, col_names=["Signal"])
+    assert order1 == ["Signal"] and cols1 == {"Signal": [1.0, 2.0, 3.0]}
+
+    # 2D array: duplicates and mismatched lengths must raise ValueError
+    arr2d = _FakeArray([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], (2, 3))
+    with pytest.raises(ValueError, match="duplicate"):
+        tg_client._coerce_tabular_input(arr2d, col_names=["A", "A", "B"])
+    with pytest.raises(ValueError):
+        tg_client._coerce_tabular_input(arr2d, col_names=["OnlyOne", "OnlyTwo"])
+    cols2, order2, _, _, _, desig2 = tg_client._coerce_tabular_input(
+        arr2d, col_names=["T", "S1", "S2"]
+    )
+    assert order2 == ["T", "S1", "S2"]
+    assert cols2["T"] == [1.0, 4.0]
+    assert desig2.get("T") == "X"
+
+    # 2D 2-col array: col_names=["Y", "X"] must rename positionally (NOT swap via synthetic names!),
+    # and col_names=["X"] must raise ValueError (NOT silently drop column 1!)
+    arr2x2 = _FakeArray([[1.0, 2.0], [3.0, 4.0]], (2, 2))
+    cols_yx, order_yx, _, _, _, desig_yx = tg_client._coerce_tabular_input(
+        arr2x2, col_names=["Y", "X"]
+    )
+    assert order_yx == ["Y", "X"]
+    assert cols_yx == {"Y": [1.0, 3.0], "X": [2.0, 4.0]}
+    assert desig_yx.get("Y") == "X"
+    with pytest.raises(ValueError):
+        tg_client._coerce_tabular_input(arr2x2, col_names=["X"])
+
+    # 2D 0-column array returns empty dict/order cleanly and rejects non-empty col_names
+    arr_empty = _FakeArray([[], []], (2, 0))
+    cols0, order0, *_ = tg_client._coerce_tabular_input(arr_empty)
+    assert cols0 == {} and order0 == []
+    with pytest.raises(ValueError):
+        tg_client._coerce_tabular_input(arr_empty, col_names=["X"])
+
+
+def test_create_table_explicit_rows_vs_inferred_rows() -> None:
+    """Campaign 2: Session.create_table must track explicit rows independently of cols."""
+    # Case 1: data + cols specified, rows omitted -> infer 2 rows (NOT 30!)
+    t1 = MockTransport([_ok({"name": "T1"}), _ok({"ok": True})])
+    s1 = Session(t1)
+    s1.create_table(data={"X": [1.0, 2.0], "Y": [3.0, 4.0]}, cols=2)
+    assert t1.sent[0][0]["method"] == "table.create"
+    assert t1.sent[0][0]["params"]["rows"] == 2
+
+    # Case 2: data + explicit rows=50, cols omitted -> respect rows=50 (NOT truncated to 2!)
+    t2 = MockTransport([_ok({"name": "T2"}), _ok({"ok": True})])
+    s2 = Session(t2)
+    s2.create_table(rows=50, data={"X": [1.0, 2.0], "Y": [3.0, 4.0]})
+    assert t2.sent[0][0]["params"]["rows"] == 50
+
+    # Case 3: default create_table() with no args -> 30 rows, 2 cols
+    t3 = MockTransport([_ok({"name": "T3"})])
+    s3 = Session(t3)
+    s3.create_table()
+    assert t3.sent[0][0]["params"]["rows"] == 30
+    assert t3.sent[0][0]["params"]["cols"] == 2
+
+
+def test_connect_closes_transport_on_post_connect_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Campaign 2: connect() must close the transport if ping or version check raises."""
+    closed_ping = {"count": 0}
+
+    class _FailingPingTransport:
+        def send_line(self, data: bytes, timeout: float = 30.0) -> None:
+            raise TransportError("ping failed")
+
+        def recv_line(self, timeout: float = 30.0) -> bytes:
+            raise TransportError("ping failed")
+
+        def close(self) -> None:
+            closed_ping["count"] += 1
+
+    monkeypatch.setattr(
+        tg_client,
+        "_parse_and_connect_transport",
+        lambda endpoint, timeout=30.0, token=None: _FailingPingTransport(),
+    )
+    with pytest.raises(TransportError, match="ping failed"):
+        tg_client.connect("tcp://127.0.0.1:9999", timeout=1.0)
+    assert closed_ping["count"] >= 1
+
+    # Also verify non-TransportError failure during check_app_version closes the transport
+    t_ver = MockTransport([_ok({"ok": True})])
+    closed_ver = {"count": 0}
+    orig_close = t_ver.close
+
+    def _track_close() -> None:
+        closed_ver["count"] += 1
+        orig_close()
+
+    monkeypatch.setattr(t_ver, "close", _track_close)
+    monkeypatch.setattr(
+        tg_client,
+        "_parse_and_connect_transport",
+        lambda endpoint, timeout=30.0, token=None: t_ver,
+    )
+    monkeypatch.setattr(
+        tg_client,
+        "check_app_version",
+        lambda session: (_ for _ in ()).throw(RuntimeError("version check boom")),
+    )
+    with pytest.raises(RuntimeError, match="version check boom"):
+        tg_client.connect("tcp://127.0.0.1:9999", timeout=1.0, check_version=True)
+    assert closed_ver["count"] == 1
+

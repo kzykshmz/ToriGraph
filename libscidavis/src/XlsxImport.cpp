@@ -595,7 +595,7 @@ bool parseWorksheet(const QByteArray &xml, const QStringList &sharedStrings,
         }
         denseBudget += qint64(maxRow + 1);
     }
-    if (denseBudget > kMaxTotalCells * 2 || maxRow >= kMaxRows || maxCol >= kMaxCols) {
+    if (denseBudget > kMaxTotalCells || maxRow >= kMaxRows || maxCol >= kMaxCols) {
         if (outErr) {
             *outErr = trX("Worksheet \"%1\" exceeds the maximum import size "
                           "(20,000,000 cells).")
@@ -972,8 +972,17 @@ bool readWorkbookData(const QByteArray &data, Workbook &out, QString *outError,
             return fail(damagedMessage(QStringLiteral("workbook.xml: %1").arg(r.errorString())));
     }
 
+    constexpr int kMaxWorkbookSheets = 256;
+    if (sheetRefs.size() > kMaxWorkbookSheets) {
+        return fail(trX("Workbook contains too many sheets (%1; maximum %2).")
+                            .arg(sheetRefs.size())
+                            .arg(kMaxWorkbookSheets));
+    }
+
     bool foundRequested = onlySheet.isEmpty();
     QStringList allNames;
+    QSet<QString> seenParts;
+    qint64 totalWorkbookCells = 0;
     for (int si = 0; si < sheetRefs.size(); ++si) {
         const SheetRef &ref = sheetRefs.at(si);
         allNames << ref.name;
@@ -999,6 +1008,14 @@ bool readWorkbookData(const QByteArray &data, Workbook &out, QString *outError,
             continue;
         foundRequested = true;
 
+        const QString partKey = part.toLower();
+        if (seenParts.contains(partKey)) {
+            return fail(damagedMessage(
+                    QStringLiteral("multiple sheets reference the same worksheet part '%1'")
+                            .arg(part)));
+        }
+        seenParts.insert(partKey);
+
         QByteArray xml;
         if (!readPart(zip, part, xml, &err))
             return fail(damagedMessage(err));
@@ -1010,7 +1027,14 @@ bool readWorkbookData(const QByteArray &data, Workbook &out, QString *outError,
                 return fail(err);
             return fail(damagedMessage(err));
         }
-        out.sheets << sheet;
+        qint64 sheetCells = sheet.rows.size();
+        for (const QVector<Cell> &rowCells : sheet.rows)
+            sheetCells += rowCells.size();
+        if (totalWorkbookCells + sheetCells > kMaxTotalCells) {
+            return fail(trX("Workbook exceeds the maximum import size (20,000,000 cells)."));
+        }
+        totalWorkbookCells += sheetCells;
+        out.sheets << std::move(sheet);
     }
     if (!foundRequested) {
         return fail(trX("Sheet \"%1\" was not found in the workbook.\nSheets: %2")

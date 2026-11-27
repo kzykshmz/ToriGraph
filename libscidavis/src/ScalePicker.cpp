@@ -28,6 +28,7 @@
  ***************************************************************************/
 #include "ScalePicker.h"
 #include "CanvasInlineTextEditor.h"
+#include "SafeLinearScaleEngine.h"
 #include "ScaleDraw.h"
 #include "Plot.h"
 #include "Graph.h"
@@ -745,7 +746,7 @@ bool ScalePicker::commitInlineScaleEditor(bool openOppositeEnd)
     const bool isFormulaLinked = (g->linkedParentLayer() != nullptr)
             && ((isXAxis ? g->xLinkMode() : g->yLinkMode()) == 2);
     const bool isUnknownCustomEngine = !hasBreak && !mirrorHasBreak
-            && typeid(*se) != typeid(QwtLinearScaleEngine)
+            && !isStandardLinearScaleEngine(se)
             && !Plot::isLog10ScaleEngine(se);
     if (isFormulaLinked || isUnknownCustomEngine) {
         flagError(tr("Formula-linked axis scale is controlled by the parent layer."));

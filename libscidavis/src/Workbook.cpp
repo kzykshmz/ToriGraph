@@ -523,7 +523,8 @@ void WorkbookManager::showInPlaceOf(Table *t, const QRect &geometry, bool maximi
         t->setMaximized();
     else if (geometry.isValid() && !d_app->isTabbedWorkspaceView())
         t->setGeometry(geometry);
-    d_user_hidden[t] = false;
+    if (bookFor(t))
+        d_user_hidden[t] = false;
     d_switching = prev;
 }
 
@@ -1600,9 +1601,11 @@ void WorkbookManager::refreshBar(Table *t, const Book &b)
                         for (Table *s : bk->sheets)
                             if (s && s->name() == sheetAt(i))
                                 target = s;
-                    QMenu menu(tabs);
-                    buildSheetMenu(&menu, target, true);
-                    menu.exec(tabs->mapToGlobal(pos));
+                    QPointer<QMenu> menu = new QMenu(tabs);
+                    buildSheetMenu(menu, target, true);
+                    menu->exec(tabs->mapToGlobal(pos));
+                    if (menu)
+                        delete menu.data();
                 });
         connect(plus, &QToolButton::clicked, this, [this, self]() {
             if (!self || d_shutdown)
@@ -1683,13 +1686,16 @@ void WorkbookManager::showRenameBookDialog(const QString &book)
 {
     if (!find(book) || nonInteractive(d_app))
         return;
+    QPointer<WorkbookManager> self(this);
     bool ok = false;
     const QString text = QInputDialog::getText(
             d_app, wbTr("Rename Workbook"),
             wbTr("Workbook name (letters, digits, _ or -).\nThe sheets keep their names, so graphs "
                  "and formulas are not affected."),
             QLineEdit::Normal, book, &ok);
-    if (!ok || text.trimmed().isEmpty() || text.trimmed() == book)
+    if (!self || !ok || d_shutdown || !find(book))
+        return;
+    if (text.trimmed().isEmpty() || text.trimmed() == book)
         return;
     QString err;
     if (!renameBook(book, text, &err) && !err.isEmpty())

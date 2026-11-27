@@ -1248,9 +1248,9 @@ ExtraPlotTypes::plotProbability(ApplicationWindow *app, Table *t, const QString 
     res.rSquare = r2;
     res.sorted = vals;
     res.variate = var;
-    if (dist == Gumbel && returnPeriod > 1.0) {
+    if (dist == Gumbel && std::isfinite(returnPeriod) && returnPeriod > 1.0) {
         res.returnPeriod = returnPeriod;
-        res.returnValue = a + b * (-std::log(-std::log(1.0 - 1.0 / returnPeriod)));
+        res.returnValue = a + b * (-std::log(-std::log1p(-1.0 / returnPeriod)));
     }
     res.valid = true;
     if (!app)

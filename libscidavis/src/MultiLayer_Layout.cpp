@@ -1041,14 +1041,14 @@ void MultiLayer::syncChildOverlayAndInsetGeometries()
                     int trimBottom = 0;
                     if (canvas && canvas->width() >= 140) {
                         const int overR =
-                                (targetInner.left() + targetInner.width() + shiftLeft + cR0)
+                                (targetInner.left() + targetInner.width() + cR0)
                                 - (canvas->width() - 4);
                         if (overR > 0 && pGeo.width() - shiftLeft - overR >= 80)
                             trimRight = overR;
                     }
                     if (canvas && canvas->height() >= 140) {
                         const int overB =
-                                (targetInner.top() + targetInner.height() + shiftTop + cB0)
+                                (targetInner.top() + targetInner.height() + cB0)
                                 - (canvas->height() - 4);
                         if (overB > 0 && pGeo.height() - shiftTop - overB >= 80)
                             trimBottom = overB;

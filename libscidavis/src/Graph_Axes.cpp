@@ -39,6 +39,7 @@
 #include "QwtErrorPlotCurve.h"
 #include "Legend.h"
 #include "ArrowMarker.h"
+#include "SafeLinearScaleEngine.h"
 #include "ScalePicker.h"
 #include "TitlePicker.h"
 #include "QwtPieCurve.h"
@@ -2908,7 +2909,7 @@ void Graph::updateSecondaryAxis(int axis)
     else if (Plot::isLog10ScaleEngine(se))
         sc_engine = new QwtLog10ScaleEngine();
     else
-        sc_engine = new QwtLinearScaleEngine();
+        sc_engine = createSafeLinearScaleEngine();
 
     if (se->testAttribute(QwtScaleEngine::Inverted))
         sc_engine->setAttribute(QwtScaleEngine::Inverted);
@@ -3293,7 +3294,7 @@ void Graph::setScale(int axis, double start, double end, double step, int majorT
     if (type)
         sc_engine = new QwtLog10ScaleEngine();
     else
-        sc_engine = new QwtLinearScaleEngine();
+        sc_engine = createSafeLinearScaleEngine();
 
     int max_min_intervals = minorTicks;
     if (minorTicks >= 1)
@@ -3710,7 +3711,7 @@ void Graph::setCategoryLabels(int axis, const QStringList &labels)
     catTicks[QwtScaleDiv::MinorTick] = emptyTicks;
     catTicks[QwtScaleDiv::MediumTick] = emptyTicks;
     catTicks[QwtScaleDiv::MajorTick] = catMaj;
-    QwtScaleEngine *catEng = new QwtLinearScaleEngine();
+    QwtScaleEngine *catEng = createSafeLinearScaleEngine();
     QwtScaleDiv catDiv(cLo, cHi, catTicks);
     if (isInv) {
         catEng->setAttribute(QwtScaleEngine::Inverted);
@@ -3961,7 +3962,7 @@ void Graph::syncCustomAndWeibullAxes()
             ticks[QwtScaleDiv::MinorTick] = emptyTicks;
             ticks[QwtScaleDiv::MediumTick] = emptyTicks;
             ticks[QwtScaleDiv::MajorTick] = maj;
-            QwtScaleEngine *eng = new QwtLinearScaleEngine();
+            QwtScaleEngine *eng = createSafeLinearScaleEngine();
             QwtScaleDiv div(cLo, cHi, ticks);
             if (isInv) {
                 eng->setAttribute(QwtScaleEngine::Inverted);
@@ -3981,7 +3982,7 @@ void Graph::syncCustomAndWeibullAxes()
                 && !hasColorScaleOnAxis(opp) && !d_weibull_prob_axis[opp]
                 && d_custom_tick_positions[opp].isEmpty()
                 && d_custom_category_labels[opp].isEmpty()) {
-                QwtScaleEngine *oppEng = new QwtLinearScaleEngine();
+                QwtScaleEngine *oppEng = createSafeLinearScaleEngine();
                 if (isInv)
                     oppEng->setAttribute(QwtScaleEngine::Inverted);
                 d_plot->setAxisMaxMinor(opp, 0);
@@ -4047,7 +4048,7 @@ void Graph::syncCustomAndWeibullAxes()
             wTicks[QwtScaleDiv::MinorTick] = minTicks;
             wTicks[QwtScaleDiv::MediumTick] = emptyMed;
             wTicks[QwtScaleDiv::MajorTick] = majTicks;
-            QwtScaleEngine *wEng = new QwtLinearScaleEngine();
+            QwtScaleEngine *wEng = createSafeLinearScaleEngine();
             QwtScaleDiv wDiv(lo, hi, wTicks);
             if (isInv) {
                 wEng->setAttribute(QwtScaleEngine::Inverted);
@@ -4254,7 +4255,7 @@ void Graph::syncLinkedAxesFromParent()
             auto applyDirect = [&](int targetAxis) {
                 QwtScaleEngine *se = scaleType
                         ? static_cast<QwtScaleEngine *>(new QwtLog10ScaleEngine())
-                        : static_cast<QwtScaleEngine *>(new QwtLinearScaleEngine());
+                        : static_cast<QwtScaleEngine *>(createSafeLinearScaleEngine());
                 int maxMinInt = minT;
                 if (minT == 1)
                     maxMinInt = 3;
@@ -4331,7 +4332,7 @@ void Graph::syncLinkedAxesFromParent()
             const double hi = qMax(c1, c2);
             const bool shouldInvert = ((c1 > c2) != parentInverted);
             auto applyFallback = [&](int targetAxis) {
-                QwtLinearScaleEngine *se = new QwtLinearScaleEngine();
+                QwtLinearScaleEngine *se = createSafeLinearScaleEngine();
                 QwtScaleDiv div = se->divideScale(lo, hi, qMin(qMax(2, maj), 5), 3, 0.0);
                 if (shouldInvert) {
                     se->setAttribute(QwtScaleEngine::Inverted, true);
@@ -4372,7 +4373,7 @@ void Graph::syncLinkedAxesFromParent()
             QwtScaleEngine *se = isMonotone
                     ? static_cast<QwtScaleEngine *>(new FormulaLinkedScaleEngine(
                               xpTable, ucTable, effParentLo, pHi, parentLog))
-                    : static_cast<QwtScaleEngine *>(new QwtLinearScaleEngine());
+                    : static_cast<QwtScaleEngine *>(createSafeLinearScaleEngine());
             if (shouldInvert)
                 se->setAttribute(QwtScaleEngine::Inverted, true);
             QwtScaleDiv div = se->divideScale(uLo, uHi, maxMaj, 3, 0.0);

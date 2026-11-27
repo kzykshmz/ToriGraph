@@ -32,6 +32,7 @@
  ***************************************************************************/
 
 #include <cmath>
+#include <limits>
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -81,7 +82,10 @@ int expd3_f(const gsl_vector *x, void *params, gsl_vector *f)
         }
         double s = sigma ? sigma[i] : 1.0;
         double Yi = A1 * exp(-X[i] * t1) + A2 * exp(-X[i] * t2) + A3 * exp(-X[i] * t3) + y0;
-        gsl_vector_set(f, i, (Yi - Y[i]) / s);
+        double fi = (Yi - Y[i]) / s;
+        if (!std::isfinite(fi))
+            return GSL_EDOM;
+        gsl_vector_set(f, i, fi);
     }
 
     return GSL_SUCCESS;
@@ -111,6 +115,8 @@ double expd3_d(const gsl_vector *x, void *params)
         double dYi =
                 ((A1 * exp(-X[i] * t1) + A2 * exp(-X[i] * t2) + A3 * exp(-X[i] * t3) + y0) - Y[i])
                 / s;
+        if (!std::isfinite(dYi))
+            return std::numeric_limits<double>::infinity();
         val += dYi * dYi;
     }
 
@@ -145,13 +151,19 @@ int expd3_df(const gsl_vector *x, void *params, gsl_matrix *J)
         double e1 = exp(-t * l1) / s;
         double e2 = exp(-t * l2) / s;
         double e3 = exp(-t * l3) / s;
+        double j1 = -t * A1 * e1;
+        double j3 = -t * A2 * e2;
+        double j5 = -t * A3 * e3;
+        if (!std::isfinite(e1) || !std::isfinite(e2) || !std::isfinite(e3)
+            || !std::isfinite(j1) || !std::isfinite(j3) || !std::isfinite(j5))
+            return GSL_EDOM;
 
         gsl_matrix_set(J, i, 0, e1);
-        gsl_matrix_set(J, i, 1, -t * A1 * e1);
+        gsl_matrix_set(J, i, 1, j1);
         gsl_matrix_set(J, i, 2, e2);
-        gsl_matrix_set(J, i, 3, -t * A2 * e2);
+        gsl_matrix_set(J, i, 3, j3);
         gsl_matrix_set(J, i, 4, e3);
-        gsl_matrix_set(J, i, 5, -t * A3 * e3);
+        gsl_matrix_set(J, i, 5, j5);
         gsl_matrix_set(J, i, 6, 1 / s);
     }
     return GSL_SUCCESS;
@@ -159,10 +171,10 @@ int expd3_df(const gsl_vector *x, void *params, gsl_matrix *J)
 
 int expd3_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J)
 {
-    expd3_f(x, params, f);
-    expd3_df(x, params, J);
-
-    return GSL_SUCCESS;
+    int rc = expd3_f(x, params, f);
+    if (rc != GSL_SUCCESS)
+        return rc;
+    return expd3_df(x, params, J);
 }
 
 int expd2_f(const gsl_vector *x, void *params, gsl_vector *f)
@@ -186,7 +198,10 @@ int expd2_f(const gsl_vector *x, void *params, gsl_vector *f)
         }
         double s = sigma ? sigma[i] : 1.0;
         double Yi = A1 * exp(-X[i] * t1) + A2 * exp(-X[i] * t2) + y0;
-        gsl_vector_set(f, i, (Yi - Y[i]) / s);
+        double fi = (Yi - Y[i]) / s;
+        if (!std::isfinite(fi))
+            return GSL_EDOM;
+        gsl_vector_set(f, i, fi);
     }
 
     return GSL_SUCCESS;
@@ -212,6 +227,8 @@ double expd2_d(const gsl_vector *x, void *params)
             continue;
         double s = sigma ? sigma[i] : 1.0;
         double dYi = ((A1 * exp(-X[i] * t1) + A2 * exp(-X[i] * t2) + y0) - Y[i]) / s;
+        if (!std::isfinite(dYi))
+            return std::numeric_limits<double>::infinity();
         val += dYi * dYi;
     }
 
@@ -244,11 +261,15 @@ int expd2_df(const gsl_vector *x, void *params, gsl_matrix *J)
         double t = X[i];
         double e1 = exp(-t * l1) / s;
         double e2 = exp(-t * l2) / s;
+        double j1 = -t * A1 * e1;
+        double j3 = -t * A2 * e2;
+        if (!std::isfinite(e1) || !std::isfinite(e2) || !std::isfinite(j1) || !std::isfinite(j3))
+            return GSL_EDOM;
 
         gsl_matrix_set(J, i, 0, e1);
-        gsl_matrix_set(J, i, 1, -t * A1 * e1);
+        gsl_matrix_set(J, i, 1, j1);
         gsl_matrix_set(J, i, 2, e2);
-        gsl_matrix_set(J, i, 3, -t * A2 * e2);
+        gsl_matrix_set(J, i, 3, j3);
         gsl_matrix_set(J, i, 4, 1 / s);
     }
     return GSL_SUCCESS;
@@ -256,9 +277,10 @@ int expd2_df(const gsl_vector *x, void *params, gsl_matrix *J)
 
 int expd2_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J)
 {
-    expd2_f(x, params, f);
-    expd2_df(x, params, J);
-    return GSL_SUCCESS;
+    int rc = expd2_f(x, params, f);
+    if (rc != GSL_SUCCESS)
+        return rc;
+    return expd2_df(x, params, J);
 }
 
 int exp_f(const gsl_vector *x, void *params, gsl_vector *f)
@@ -279,7 +301,10 @@ int exp_f(const gsl_vector *x, void *params, gsl_vector *f)
         }
         double s = sigma ? sigma[i] : 1.0;
         double Yi = A * exp(-lambda * X[i]) + b;
-        gsl_vector_set(f, i, (Yi - Y[i]) / s);
+        double fi = (Yi - Y[i]) / s;
+        if (!std::isfinite(fi))
+            return GSL_EDOM;
+        gsl_vector_set(f, i, fi);
     }
     return GSL_SUCCESS;
 }
@@ -301,6 +326,8 @@ double exp_d(const gsl_vector *x, void *params)
             continue;
         double s = sigma ? sigma[i] : 1.0;
         double dYi = ((A * exp(-lambda * X[i]) + b) - Y[i]) / s;
+        if (!std::isfinite(dYi))
+            return std::numeric_limits<double>::infinity();
         val += dYi * dYi;
     }
     return val;
@@ -328,8 +355,12 @@ int exp_df(const gsl_vector *x, void *params, gsl_matrix *J)
         double t = X[i];
         double s = sigma ? sigma[i] : 1.0;
         double e = exp(-lambda * t);
-        gsl_matrix_set(J, i, 0, e / s);
-        gsl_matrix_set(J, i, 1, -t * A * e / s);
+        double j0 = e / s;
+        double j1 = -t * A * e / s;
+        if (!std::isfinite(j0) || !std::isfinite(j1))
+            return GSL_EDOM;
+        gsl_matrix_set(J, i, 0, j0);
+        gsl_matrix_set(J, i, 1, j1);
         gsl_matrix_set(J, i, 2, 1 / s);
     }
     return GSL_SUCCESS;
@@ -337,9 +368,10 @@ int exp_df(const gsl_vector *x, void *params, gsl_matrix *J)
 
 int exp_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J)
 {
-    exp_f(x, params, f);
-    exp_df(x, params, J);
-    return GSL_SUCCESS;
+    int rc = exp_f(x, params, f);
+    if (rc != GSL_SUCCESS)
+        return rc;
+    return exp_df(x, params, J);
 }
 
 int gauss_f(const gsl_vector *x, void *params, gsl_vector *f)
@@ -353,6 +385,9 @@ int gauss_f(const gsl_vector *x, void *params, gsl_vector *f)
     double A = gsl_vector_get(x, 1);
     double C = gsl_vector_get(x, 2);
     double w = gsl_vector_get(x, 3);
+    double w2 = w * w;
+    if (!std::isfinite(w2) || !(w2 > 1e-300))
+        return GSL_EDOM;
 
     size_t i;
 
@@ -363,8 +398,11 @@ int gauss_f(const gsl_vector *x, void *params, gsl_vector *f)
         }
         double s = sigma ? sigma[i] : 1.0;
         double diff = X[i] - C;
-        double Yi = A * exp(-0.5 * diff * diff / (w * w)) + Y0;
-        gsl_vector_set(f, i, (Yi - Y[i]) / s);
+        double Yi = A * exp(-0.5 * diff * diff / w2) + Y0;
+        double fi = (Yi - Y[i]) / s;
+        if (!std::isfinite(fi))
+            return GSL_EDOM;
+        gsl_vector_set(f, i, fi);
     }
     return GSL_SUCCESS;
 }
@@ -380,6 +418,9 @@ double gauss_d(const gsl_vector *x, void *params)
     double A = gsl_vector_get(x, 1);
     double C = gsl_vector_get(x, 2);
     double w = gsl_vector_get(x, 3);
+    double w2 = w * w;
+    if (!std::isfinite(w2) || !(w2 > 1e-300))
+        return std::numeric_limits<double>::infinity();
 
     size_t i;
     double val = 0;
@@ -389,7 +430,9 @@ double gauss_d(const gsl_vector *x, void *params)
             continue;
         double s = sigma ? sigma[i] : 1.0;
         double diff = X[i] - C;
-        double dYi = ((A * exp(-0.5 * diff * diff / (w * w)) + Y0) - Y[i]) / s;
+        double dYi = ((A * exp(-0.5 * diff * diff / w2) + Y0) - Y[i]) / s;
+        if (!std::isfinite(dYi))
+            return std::numeric_limits<double>::infinity();
         val += dYi * dYi;
     }
     return val;
@@ -404,6 +447,10 @@ int gauss_df(const gsl_vector *x, void *params, gsl_matrix *J)
     double A = gsl_vector_get(x, 1);
     double C = gsl_vector_get(x, 2);
     double w = gsl_vector_get(x, 3);
+    double w2 = w * w;
+    double w3 = w2 * w;
+    if (!std::isfinite(w3) || !(std::fabs(w3) > 1e-300))
+        return GSL_EDOM;
 
     size_t i;
     for (i = 0; i < n; i++) {
@@ -418,22 +465,26 @@ int gauss_df(const gsl_vector *x, void *params, gsl_matrix *J)
 
         double s = sigma ? sigma[i] : 1.0;
         double diff = X[i] - C;
-        double e = exp(-0.5 * diff * diff / (w * w)) / s;
+        double e = exp(-0.5 * diff * diff / w2) / s;
+        double j2 = diff * A * e / w2;
+        double j3 = diff * diff * A * e / w3;
+        if (!std::isfinite(e) || !std::isfinite(j2) || !std::isfinite(j3))
+            return GSL_EDOM;
 
         gsl_matrix_set(J, i, 0, 1 / s);
         gsl_matrix_set(J, i, 1, e);
-        gsl_matrix_set(J, i, 2, diff * A * e / (w * w));
-        gsl_matrix_set(J, i, 3, diff * diff * A * e / (w * w * w));
+        gsl_matrix_set(J, i, 2, j2);
+        gsl_matrix_set(J, i, 3, j3);
     }
     return GSL_SUCCESS;
 }
 
 int gauss_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J)
 {
-    gauss_f(x, params, f);
-    gauss_df(x, params, J);
-
-    return GSL_SUCCESS;
+    int rc = gauss_f(x, params, f);
+    if (rc != GSL_SUCCESS)
+        return rc;
+    return gauss_df(x, params, J);
 }
 
 int gauss_multi_peak_f(const gsl_vector *x, void *params, gsl_vector *f)

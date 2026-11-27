@@ -1139,6 +1139,17 @@ private:
         if (im.isNull())
             return;
         const GraphDigitizer::AxisCalibration cal = currentCalibration();
+        bool hasLogErr = false, hasDegenErr = false;
+        const QString calWarn =
+                calibrationWarningMessage(cal, &hasLogErr, nullptr, &hasDegenErr);
+        if (hasLogErr || hasDegenErr) {
+            const QObject *ctxObj = d_app ? static_cast<const QObject *>(d_app)
+                                          : static_cast<const QObject *>(this);
+            if (!ApplicationWindow::isNonInteractiveContext(ctxObj)) {
+                QMessageBox::warning(this, tr("Graph Image Digitizer"), calWarn);
+            }
+            return;
+        }
         const QVector<QPointF> tracedData = GraphDigitizer::autoTraceCurveByColor(
                 im, cal, d_targetColor, d_sbTol->value(), d_sbSamples->value(),
                 d_canvas->traceRoi());
@@ -1165,7 +1176,12 @@ private:
         d_pixelPts.reserve(d_pixelPts.size() + tracedData.size());
         d_pointIsManual.reserve(d_pointIsManual.size() + tracedData.size());
         for (const QPointF &dp : tracedData) {
-            d_pixelPts.append(GraphDigitizer::mapDataToPixel(dp, cal));
+            if (!std::isfinite(dp.x()) || !std::isfinite(dp.y()))
+                continue;
+            const QPointF pxPt = GraphDigitizer::mapDataToPixel(dp, cal);
+            if (!std::isfinite(pxPt.x()) || !std::isfinite(pxPt.y()))
+                continue;
+            d_pixelPts.append(pxPt);
             d_pointIsManual.append(false);
         }
         refreshCalibrationAndPreview();
@@ -1232,14 +1248,20 @@ private:
         if (yValsEqual)
             degenBad << tr("Y axis calibration requires Y1 != Y2.");
 
-        const double pxDistX = std::hypot(cal.pixelX2.x() - cal.pixelX1.x(),
-                                          cal.pixelX2.y() - cal.pixelX1.y());
-        const double pxDistY = std::hypot(cal.pixelY2.x() - cal.pixelY1.x(),
-                                          cal.pixelY2.y() - cal.pixelY1.y());
+        const double exx = cal.pixelX2.x() - cal.pixelX1.x();
+        const double exy = cal.pixelX2.y() - cal.pixelX1.y();
+        const double eyx = cal.pixelY2.x() - cal.pixelY1.x();
+        const double eyy = cal.pixelY2.y() - cal.pixelY1.y();
+        const double pxDistX = std::hypot(exx, exy);
+        const double pxDistY = std::hypot(eyx, eyy);
         if (d_hasX1 && d_hasX2 && pxDistX < 1.0)
             degenBad << tr("X1 and X2 pixel anchors must be distinct (distance >= 1 px).");
         if (d_hasY1 && d_hasY2 && pxDistY < 1.0)
             degenBad << tr("Y1 and Y2 pixel anchors must be distinct (distance >= 1 px).");
+        const double det = exx * eyy - exy * eyx;
+        const double normScale = pxDistX * pxDistY;
+        if (pxDistX >= 1.0 && pxDistY >= 1.0 && std::fabs(det) <= 1e-12 * normScale)
+            degenBad << tr("X and Y calibration axes must not be collinear.");
         const bool degenerateError = !degenBad.isEmpty();
 
         if (hasMissingAnchorsOut)
@@ -1622,8 +1644,13 @@ QVector<QPointF> GraphDigitizer::autoTraceCurveByColor(const QImage &img,
         }
     }
 
-    std::sort(out.begin(), out.end(),
-              [](const QPointF &a, const QPointF &b) { return a.x() < b.x(); });
+    std::sort(out.begin(), out.end(), [](const QPointF &a, const QPointF &b) {
+        const bool aNan = std::isnan(a.x());
+        const bool bNan = std::isnan(b.x());
+        if (aNan != bNan)
+            return !aNan;
+        return !aNan && (a.x() < b.x());
+    });
     return out;
 }
 

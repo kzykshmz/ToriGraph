@@ -1944,7 +1944,7 @@ extern const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "curvemath.eis_fit", "curvemath",
       "Session.eis_fit(table=None, freq_col=0, z_re_col=1, z_im_col=2, *, model='Randles_CPE', z_imag_negated=False)",
       "Fit electrochemical impedance Nyquist & Bode data to Randles or Randles-CPE equivalent circuits (set z_imag_negated=True if z_im_col holds -Im(Z)).",
-      "table:str=''; freq_col:int|str=0; z_re_col:int|str=1; z_im_col:int|str=2; model:str='Randles_CPE'[Randles|Randles_CPE|RandlesWarburg]; z_imag_negated:bool=false",
+      "table:str=''; freq_col:int|str=0; z_re_col:int|str=1; z_im_col:int|str=2; model:str='Randles_CPE'[Randles|Randles_CPE]; z_imag_negated:bool=false",
       "res = app.eis_fit(tbl, 'Freq', 'Z_re', 'Z_im')" },
     { "curvemath.kissinger", "curvemath",
       "Session.analyze_kissinger(table=None, rate_col=None, temp_col=None, *, heating_rates=None, peak_temps=None, rate_in_k_per_hour=False, temp_in_celsius=True, top_axis_in_celsius=True, temp_min=None, temp_max=None)",
@@ -5333,6 +5333,8 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
         QVector<QMetaObject::Connection> conns;
         QHash<QUndoStack *, int> indexBefore;
         QVector<QPointer<QUndoStack>> moved; // in the order they first moved
+        bool succeeded = false;
+        bool resetUndoHistory = false;
 
         UndoTargetWatch(ApplicationWindow *a, const QString &m, QString &d, QString &g,
                         QList<QPointer<QUndoStack>> &ul, QList<QPointer<QUndoStack>> &rl, bool &wc)
@@ -5380,6 +5382,13 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
             }
             return false;
         }
+        static void removeAllEntries(QList<QPointer<QUndoStack>> &log, QUndoStack *us)
+        {
+            for (int i = log.size() - 1; i >= 0; --i) {
+                if (log.at(i).data() == us)
+                    log.removeAt(i);
+            }
+        }
         void updateLogs()
         {
             const bool redoCall = method == QStringLiteral("app.redo");
@@ -5390,7 +5399,7 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
                 if (!us)
                     continue;
                 const int delta = us->index() - indexBefore.value(us, us->index());
-                if (delta == 0 && !stepCall && us->index() > 0) {
+                if (succeeded && delta == 0 && !stepCall && us->index() > 0) {
                     // a new change merged into the stack's last step (e.g. a column set twice):
                     // that step is now the latest one
                     takeLast(undoLog, us);
@@ -5398,9 +5407,17 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
                     newChange = true;
                     continue;
                 }
-                for (int k = 0; k < -delta; ++k) { // undone
-                    takeLast(undoLog, us);
-                    redoLog.append(QPointer<QUndoStack>(us));
+                if (delta < 0) {
+                    if (stepCall || us->canRedo()) {
+                        for (int k = 0; k < -delta; ++k) { // undone
+                            takeLast(undoLog, us);
+                            redoLog.append(QPointer<QUndoStack>(us));
+                        }
+                    } else {
+                        // stack was cleared (e.g., reset/rollback), not undone
+                        removeAllEntries(undoLog, us);
+                        removeAllEntries(redoLog, us);
+                    }
                 }
                 for (int k = 0; k < delta; ++k) { // redone, or a new step
                     // app.undo / app.redo only log the steps they redid (a stack that moved
@@ -5441,20 +5458,26 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
             // app.undo / app.redo keep it)
             if (method == QStringLiteral("app.activate_window"))
                 windowChosen = true;
-            else if (!moved.isEmpty() && !stepCall)
+            else if (succeeded && (!moved.isEmpty() || newChange) && !stepCall)
                 windowChosen = false;
         }
         ~UndoTargetWatch()
         {
             for (const QMetaObject::Connection &c : conns)
                 QObject::disconnect(c);
-            if (method == QStringLiteral("app.new_project")
-                || method == QStringLiteral("app.open_project")) {
+            if (resetUndoHistory) {
                 domain.clear();
                 graphName.clear();
                 undoLog.clear();
                 redoLog.clear();
                 windowChosen = false;
+                return;
+            }
+            if (!succeeded) {
+                // Failed/rolled-back RPC before mutating undo stacks must not corrupt tracking;
+                // if a partial rollback cleared stacks, updateLogs() drops cleared stacks cleanly.
+                if (!moved.isEmpty())
+                    updateLogs();
                 return;
             }
             updateLogs();
@@ -5490,17 +5513,33 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
     } undoTargetWatch(d_app, method, d_last_undo_domain, d_last_undo_graph, d_undo_log,
                       d_redo_log, d_undo_window_chosen);
 
+    auto markWatchCompleted = [&](const QJsonObject &res) {
+        const bool batchRolledBack = (method == QStringLiteral("app.batch")
+                                      && !res.value(QStringLiteral("ok")).toBool(true)
+                                      && res.value(QStringLiteral("rolled_back")).toBool(false));
+        undoTargetWatch.succeeded = !batchRolledBack;
+        if (method == QStringLiteral("app.new_project")
+            || (method == QStringLiteral("app.open_project")
+                && !res.value(QStringLiteral("appended")).toBool(false))
+            || (method == QStringLiteral("app.batch")
+                && res.value(QStringLiteral("undo_history_cleared")).toBool(false))) {
+            undoTargetWatch.resetUndoHistory = true;
+        }
+    };
+
     QJsonObject result;
     if (dispatchCoreAndGraphMethod(this, d_app, d_focus_hud_fallback, d_workspace_mode_fallback,
                                    d_last_undo_domain, d_last_undo_graph, method, params,
                                    result)) {
         if (!result.contains(QStringLiteral("ok")))
             result[QStringLiteral("ok")] = true;
+        markWatchCompleted(result);
         return result;
     }
     if (dispatchAnalysisAndScienceMethod(d_app, method, params, result)) {
         if (!result.contains(QStringLiteral("ok")))
             result[QStringLiteral("ok")] = true;
+        markWatchCompleted(result);
         return result;
     }
 

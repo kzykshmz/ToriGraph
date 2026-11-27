@@ -683,7 +683,7 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             }
         }
 
-        const bool plotCurve = params.value(QStringLiteral("plot_curve")).toBool(false);
+        const bool plotCurve = optionalJsonBool(params, QStringLiteral("plot_curve"), false);
         const int curvesBefore = g->curves();
         Legend *leg = g->legend();
         const QString legBefore = leg ? leg->text() : QString();
@@ -1023,7 +1023,7 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         const QString cB = resolveCurveTitle(g, params, QStringLiteral("curve_b"), true);
         Table *outTbl = nullptr;
         const QVector<QPointF> pts = CurveMathTools::findCurveIntersections(
-                g, cA, cB, params.value(QStringLiteral("mark")).toBool(true), d_app, &outTbl);
+                g, cA, cB, optionalJsonBool(params, QStringLiteral("mark"), true), d_app, &outTbl);
         QJsonArray ptsArr;
         for (const QPointF &pt : pts) {
             QJsonObject po;
@@ -1182,7 +1182,7 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         QString curveTitle;
         resolveGraphAndCurveOrAutoPlot(d_app, params, ml, g, curveTitle);
         const double area = CurveMathTools::polygonArea(
-                g, curveTitle, params.value(QStringLiteral("signed")).toBool(false));
+                g, curveTitle, optionalJsonBool(params, QStringLiteral("signed"), false));
         const double arc = CurveMathTools::curveArcLength(g, curveTitle);
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("area")] = safeJsonDouble(area);
@@ -1316,7 +1316,7 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         int strainMode = -1; // auto
         if (params.contains(QStringLiteral("strain_in_percent"))
             && !params.value(QStringLiteral("strain_in_percent")).isNull()) {
-            strainMode = params.value(QStringLiteral("strain_in_percent")).toBool(true) ? 1 : 0;
+            strainMode = optionalJsonBool(params, QStringLiteral("strain_in_percent"), true) ? 1 : 0;
         }
 
         const double qNaN = std::numeric_limits<double>::quiet_NaN();
@@ -1341,14 +1341,11 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                     QStringLiteral("curvemath.offset_yield requires elastic_min < elastic_max."));
         }
 
-        const bool plotConstruction = params.contains(QStringLiteral("plot_construction"))
-                ? params.value(QStringLiteral("plot_construction")).toBool(true)
-                : true;
-        const bool addCallout = params.contains(QStringLiteral("add_callout"))
-                ? params.value(QStringLiteral("add_callout")).toBool(true)
-                : true;
+        const bool plotConstruction =
+                optionalJsonBool(params, QStringLiteral("plot_construction"), true);
+        const bool addCallout = optionalJsonBool(params, QStringLiteral("add_callout"), true);
         const bool createTrueTable =
-                params.value(QStringLiteral("create_true_stress_table")).toBool(false);
+                optionalJsonBool(params, QStringLiteral("create_true_stress_table"), false);
 
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Tensile 0.2% Proof Stress"));
         const CurveMathTools::TensileResult tr = CurveMathTools::analyzeTensile(
@@ -1563,13 +1560,17 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                 idealCapacitorOnly = true;
                 fitCircuit = true;
             } else if (mNorm == QStringLiteral("randlescpe")
-                       || mNorm == QStringLiteral("randleswarburg")
                        || mNorm == QStringLiteral("cpe")) {
                 idealCapacitorOnly = false;
                 fitCircuit = true;
+            } else if (mNorm == QStringLiteral("randleswarburg")
+                       || mNorm == QStringLiteral("warburg")) {
+                throwInvalidParams(QStringLiteral(
+                        "EIS circuit model '%1' is not supported (Warburg diffusion element is not implemented); use 'Randles' or 'Randles_CPE'.")
+                                           .arg(rawModel));
             } else {
                 throwInvalidParams(
-                        QStringLiteral("Unknown EIS circuit model '%1' (expected 'Randles' or 'Randles_CPE' / 'RandlesWarburg').")
+                        QStringLiteral("Unknown EIS circuit model '%1' (expected 'Randles' or 'Randles_CPE').")
                                 .arg(rawModel));
             }
         } else if (params.contains(QStringLiteral("fit_cpe"))
@@ -1999,7 +2000,7 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         int whStrainMode = -1;
         if (params.contains(QStringLiteral("strain_in_percent"))
             && !params.value(QStringLiteral("strain_in_percent")).isNull()) {
-            whStrainMode = params.value(QStringLiteral("strain_in_percent")).toBool(true) ? 1 : 0;
+            whStrainMode = optionalJsonBool(params, QStringLiteral("strain_in_percent"), true) ? 1 : 0;
         }
         double whOffset = 0.002;
         if (params.contains(QStringLiteral("offset_percent"))
@@ -2350,7 +2351,6 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         }
         t->setColLongName(dstIdx, outLongName);
         t->setColUnits(dstIdx, outUnit);
-        applyDefaultNumericFormat6g(t, dstIdx);
         Column *srcC = t->column(srcCol);
         Column *dstC = t->column(dstIdx);
         QVector<double> outVec(t->numRows(), std::numeric_limits<double>::quiet_NaN());
@@ -2369,6 +2369,9 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                 previewArr.append(safeJsonDouble(cv));
         }
         if (dstC) {
+            if (dstC->columnMode() != SciDAVis::ColumnMode::Numeric)
+                dstC->setColumnMode(SciDAVis::ColumnMode::Numeric);
+            applyDefaultNumericFormat6g(t, dstIdx);
             dstC->replaceValues(0, outVec);
             for (int r = 0; r < t->numRows(); ++r) {
                 if (!std::isfinite(outVec[r]))
@@ -2474,10 +2477,15 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         } else if (dnVal.isDouble()) {
             downCols << t->colLabel(resolveColumnIndex(t, dnVal, true));
         }
-        double eFermi = params.contains(QStringLiteral("fermi_energy"))
+        const bool hasExplicitFermiDos = (params.contains(QStringLiteral("fermi_energy"))
+                                          && !params.value(QStringLiteral("fermi_energy")).isNull())
+                || (params.contains(QStringLiteral("e_fermi"))
+                    && !params.value(QStringLiteral("e_fermi")).isNull());
+        double eFermi = (params.contains(QStringLiteral("fermi_energy"))
+                         && !params.value(QStringLiteral("fermi_energy")).isNull())
                 ? optionalJsonFiniteDouble(params, QStringLiteral("fermi_energy"), 0.0, 1e6)
                 : optionalJsonFiniteDouble(params, QStringLiteral("e_fermi"), 0.0, 1e6);
-        if (hasImportedFermi && qFuzzyIsNull(eFermi) && !qFuzzyIsNull(importedFermi))
+        if (!hasExplicitFermiDos && hasImportedFermi)
             eFermi = importedFermi;
         const bool vertE = optionalJsonBool(params, QStringLiteral("vertical_energy"), false);
 
@@ -2534,6 +2542,8 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         if (bVal.isArray()) {
             for (const QJsonValue &cv : bVal.toArray())
                 bandCols << t->colLabel(resolveColumnIndex(t, cv, true));
+        } else if ((bVal.isString() && !bVal.toString().trimmed().isEmpty()) || bVal.isDouble()) {
+            bandCols << t->colLabel(resolveColumnIndex(t, bVal, true));
         } else {
             for (int c = 0; c < t->numCols(); ++c) {
                 if (c != kIdx && t->column(c)
@@ -2559,10 +2569,16 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                 kLabels << lbl;
             }
         }
-        double eFermi = params.contains(QStringLiteral("fermi_energy"))
+        const bool hasExplicitFermiBands =
+                (params.contains(QStringLiteral("fermi_energy"))
+                 && !params.value(QStringLiteral("fermi_energy")).isNull())
+                || (params.contains(QStringLiteral("e_fermi"))
+                    && !params.value(QStringLiteral("e_fermi")).isNull());
+        double eFermi = (params.contains(QStringLiteral("fermi_energy"))
+                         && !params.value(QStringLiteral("fermi_energy")).isNull())
                 ? optionalJsonFiniteDouble(params, QStringLiteral("fermi_energy"), 0.0, 1e6)
                 : optionalJsonFiniteDouble(params, QStringLiteral("e_fermi"), 0.0, 1e6);
-        if (hasImportedFermi && qFuzzyIsNull(eFermi) && !qFuzzyIsNull(importedFermi))
+        if (!hasExplicitFermiBands && hasImportedFermi)
             eFermi = importedFermi;
         const double eMin = optionalJsonFiniteDouble(params, QStringLiteral("e_min"), -6.0, 1e6);
         const double eMax = optionalJsonFiniteDouble(params, QStringLiteral("e_max"), 6.0, 1e6);
@@ -2657,6 +2673,8 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         if (bVal.isArray()) {
             for (const QJsonValue &cv : bVal.toArray())
                 bandCols << bandTbl->colLabel(resolveColumnIndex(bandTbl, cv, true));
+        } else if ((bVal.isString() && !bVal.toString().trimmed().isEmpty()) || bVal.isDouble()) {
+            bandCols << bandTbl->colLabel(resolveColumnIndex(bandTbl, bVal, true));
         } else {
             for (int c = 0; c < bandTbl->numCols(); ++c) {
                 if (c != kIdx && bandTbl->column(c)
@@ -2711,17 +2729,22 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             downCols << dosTbl->colLabel(resolveColumnIndex(dosTbl, dnVal, true));
         }
 
-        const double reqFermi = params.contains(QStringLiteral("fermi_energy"))
+        const bool hasExplicitFermi = (params.contains(QStringLiteral("fermi_energy"))
+                                       && !params.value(QStringLiteral("fermi_energy")).isNull())
+                || (params.contains(QStringLiteral("e_fermi"))
+                    && !params.value(QStringLiteral("e_fermi")).isNull());
+        const double reqFermi = (params.contains(QStringLiteral("fermi_energy"))
+                                 && !params.value(QStringLiteral("fermi_energy")).isNull())
                 ? optionalJsonFiniteDouble(params, QStringLiteral("fermi_energy"), 0.0, 1e6)
                 : optionalJsonFiniteDouble(params, QStringLiteral("e_fermi"), 0.0, 1e6);
-        const double eFermiBand = (hasImportedBandFermi && qFuzzyIsNull(reqFermi)
-                                   && !qFuzzyIsNull(importedBandFermi))
-                ? importedBandFermi
-                : reqFermi;
-        const double eFermiDos = (hasImportedDosFermi && qFuzzyIsNull(reqFermi)
-                                  && !qFuzzyIsNull(importedDosFermi))
-                ? importedDosFermi
-                : eFermiBand;
+        // EIGENVAL carries no Fermi level (importedBandFermi is always 0.0), so unify both
+        // panels to DOSCAR's E_F unless the caller explicitly supplied fermi_energy/e_fermi.
+        const double unifiedFermi = hasExplicitFermi
+                ? reqFermi
+                : (hasImportedDosFermi ? importedDosFermi
+                                       : (hasImportedBandFermi ? importedBandFermi : reqFermi));
+        const double eFermiBand = unifiedFermi;
+        const double eFermiDos = unifiedFermi;
         const double eMin = optionalJsonFiniteDouble(params, QStringLiteral("e_min"), -6.0, 1e6);
         const double eMax = optionalJsonFiniteDouble(params, QStringLiteral("e_max"), 6.0, 1e6);
         validateFiniteCoordRange(eMin, eMax,
@@ -3404,7 +3427,8 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         Table *t = resolveTable(d_app, params);
         QStringList colNames;
         QVector<int> colIdxs;
-        if (params.value(QStringLiteral("cols")).isArray()) {
+        const bool explicitCols = params.value(QStringLiteral("cols")).isArray();
+        if (explicitCols) {
             for (const QJsonValue &cv : params.value(QStringLiteral("cols")).toArray()) {
                 const int ci = resolveColumnIndex(t, cv, true);
                 colIdxs.append(ci);
@@ -3412,8 +3436,11 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             }
         } else {
             for (int c = 0; c < t->numCols(); ++c) {
-                colIdxs.append(c);
-                colNames << t->colLabel(c);
+                Column *cPtr = t->column(c);
+                if (cPtr && cPtr->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                    colIdxs.append(c);
+                    colNames << t->colLabel(c);
+                }
             }
         }
         const QString mStr = (params.contains(QStringLiteral("method"))
@@ -3423,9 +3450,19 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                                      .toLower();
         if (mStr == QStringLiteral("friedman")) {
             // Exact Friedman repeated-measures rank test across k >= 3 columns (with tie correction)
+            if (explicitCols) {
+                for (int ci : colIdxs) {
+                    Column *cPtr = t->column(ci);
+                    if (!cPtr || cPtr->columnMode() != SciDAVis::ColumnMode::Numeric) {
+                        throwInvalidParams(
+                                QStringLiteral("Friedman test requires numeric columns (column '%1' is not numeric).")
+                                        .arg(t->colLabel(ci)));
+                    }
+                }
+            }
             const int k = colIdxs.size();
             if (k < 3)
-                throwInvalidParams(QStringLiteral("Friedman test requires >= 3 columns."));
+                throwInvalidParams(QStringLiteral("Friedman test requires >= 3 numeric columns."));
             std::vector<double> rankSums(size_t(k), 0.0);
             int nBlocks = 0;
             double tieSum = 0.0;
@@ -3614,9 +3651,7 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                                                       : QJsonValue(1)),
                                    true));
         const double lam = params.value(QStringLiteral("lambda")).toDouble(1.0);
-        const bool createPlot = params.contains(QStringLiteral("plot"))
-                ? params.value(QStringLiteral("plot")).toBool(true)
-                : true;
+        const bool createPlot = optionalJsonBool(params, QStringLiteral("plot"), true);
         const auto pb = GraphStatsAndSurfaceFit::runPassingBablokDeming(d_app, t, xCol, yCol, lam,
                                                                         createPlot);
         if (pb.comparisonPlot) {
@@ -4256,10 +4291,13 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                                                      : QJsonValue(0),
                                              true);
         QVector<int> scIdxs;
-        if (params.value(QStringLiteral("score_cols")).isArray()
-            && !params.value(QStringLiteral("score_cols")).toArray().isEmpty()) {
-            for (const QJsonValue &sv : params.value(QStringLiteral("score_cols")).toArray())
+        const QJsonValue scColsVal = params.value(QStringLiteral("score_cols"));
+        if (scColsVal.isArray() && !scColsVal.toArray().isEmpty()) {
+            for (const QJsonValue &sv : scColsVal.toArray())
                 scIdxs.append(resolveColumnIndex(t, sv, true));
+        } else if ((scColsVal.isString() && !scColsVal.toString().trimmed().isEmpty())
+                   || scColsVal.isDouble()) {
+            scIdxs.append(resolveColumnIndex(t, scColsVal, true));
         } else {
             const int scIdx0 = resolveColumnIndex(
                     t, params.contains(QStringLiteral("score_col"))
@@ -5100,6 +5138,40 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             } else {
                 throwInvalidParams(
                         QStringLiteral("'cal_points' must contain 4 axis points [X1, X2, Y1, Y2], 3 L-axis points [Origin, X2, Y2], or 2 corner points."));
+            }
+        }
+
+        if (cal.logX && (cal.valueX1 <= 0.0 || cal.valueX2 <= 0.0)) {
+            throwInvalidParams(
+                    QStringLiteral("digitizer.extract with log_x=true requires positive val_x1 and val_x2 (got %1, %2).")
+                            .arg(cal.valueX1)
+                            .arg(cal.valueX2));
+        }
+        if (cal.logY && (cal.valueY1 <= 0.0 || cal.valueY2 <= 0.0)) {
+            throwInvalidParams(
+                    QStringLiteral("digitizer.extract with log_y=true requires positive val_y1 and val_y2 (got %1, %2).")
+                            .arg(cal.valueY1)
+                            .arg(cal.valueY2));
+        }
+        if (std::fabs(cal.valueX2 - cal.valueX1) <= 1e-300) {
+            throwInvalidParams(
+                    QStringLiteral("digitizer.extract requires distinct val_x1 and val_x2 (got %1).")
+                            .arg(cal.valueX1));
+        }
+        if (std::fabs(cal.valueY2 - cal.valueY1) <= 1e-300) {
+            throwInvalidParams(
+                    QStringLiteral("digitizer.extract requires distinct val_y1 and val_y2 (got %1).")
+                            .arg(cal.valueY1));
+        }
+        {
+            const QPointF uX = cal.pixelX2 - cal.pixelX1;
+            const QPointF uY = cal.pixelY2 - cal.pixelY1;
+            const double normX = std::hypot(uX.x(), uX.y());
+            const double normY = std::hypot(uY.x(), uY.y());
+            const double det = uX.x() * uY.y() - uX.y() * uY.x();
+            if (normX <= 1e-9 || normY <= 1e-9 || std::fabs(det) <= 1e-12 * normX * normY) {
+                throwInvalidParams(QStringLiteral(
+                        "digitizer.extract requires distinct, non-collinear X and Y calibration pixel axes."));
             }
         }
 

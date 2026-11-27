@@ -280,8 +280,8 @@ bool ZipArchive::extract(int index, QByteArray &out, QString *outErr) const
         }
         out = QByteArray(compPtr, static_cast<int>(e.compSize));
     } else if (e.method == 8) {
-        if (!inflateBuffer(compPtr, e.compSize, -MAX_WBITS, kMaxEntryUncompressedBytes, out,
-                           outErr)) {
+        const quint64 entryMax = std::min<quint64>(e.uncompSize, kMaxEntryUncompressedBytes);
+        if (!inflateBuffer(compPtr, e.compSize, -MAX_WBITS, entryMax, out, outErr)) {
             if (outErr)
                 *outErr = QStringLiteral("Failed to deflate ZIP entry '%1': %2")
                                   .arg(e.name, *outErr);

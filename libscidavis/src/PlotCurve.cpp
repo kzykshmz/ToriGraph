@@ -607,14 +607,17 @@ int DataCurve::maskRegion(const QRectF &dataRect, bool mask)
         }
     }
 
+    bool xModified = false;
     if (!rowsToModify.isEmpty()) {
         future::Table *ft = d_table->d_future_table;
         if (ft)
             ft->beginMacro(mask ? QObject::tr("Mask Region") : QObject::tr("Unmask Region"));
         for (int row : rowsToModify) {
             yCol->setMasked(row, mask);
-            if (!mask && xCol && xCol->isMasked(row))
+            if (!mask && xCol && xCol->isMasked(row)) {
                 xCol->setMasked(row, false);
+                xModified = true;
+            }
         }
         if (ft)
             ft->endMacro();
@@ -623,6 +626,8 @@ int DataCurve::maskRegion(const QRectF &dataRect, bool mask)
 
     if (modifiedCount > 0) {
         emit d_table->modifiedData(d_table, title().text());
+        if (xModified && !d_x_column.isEmpty() && d_x_column != title().text())
+            emit d_table->modifiedData(d_table, d_x_column);
         if (plot()) {
             Graph *g = qobject_cast<Graph *>(plot()->parent());
             if (g)

@@ -272,6 +272,8 @@ def _coerce_tabular_input(
         ln: Dict[str, str],
         cm: Dict[str, str],
         des: Dict[str, str],
+        *,
+        allow_subset: bool = True,
     ) -> Tuple[Dict[str, List[Any]], List[str], Dict[str, str], Dict[str, str], Dict[str, str], Dict[str, str]]:
         if col_names is None:
             return cols, raw_cols, u, ln, cm, des
@@ -284,7 +286,7 @@ def _coerce_tabular_input(
             raise ValueError(
                 f"col_names must not be empty when input has columns ({raw_cols!r})."
             )
-        if all(c in cols for c in override):
+        if allow_subset and all(c in cols for c in override):
             keep = set(override)
             return (
                 {c: cols[c] for c in override},
@@ -394,26 +396,37 @@ def _coerce_tabular_input(
 
         ndim = int(data.ndim)
         if ndim == 1:
-            cname = str(col_names[0]) if col_names else "Y"
-            return {cname: _coerce_1d_sequence(data)}, [cname], units, long_names, comments, designations
+            raw_cols = ["Y"]
+            cols_dict = {"Y": _coerce_1d_sequence(data)}
+            return _apply_col_names_override(
+                raw_cols, cols_dict, units, long_names, comments, designations,
+                allow_subset=False,
+            )
         if ndim == 2:
             n_rows, n_cols = int(data.shape[0]), int(data.shape[1])
+            if n_cols == 0:
+                if col_names is not None and len(col_names) > 0:
+                    raise ValueError(
+                        f"col_names ({[str(c) for c in col_names]!r}) must be empty for a 0-column 2D array."
+                    )
+                return {}, [], units, long_names, comments, designations
             raw_2d = data.tolist()
-            if col_names is not None and len(col_names) == n_cols:
-                names = [str(c) for c in col_names]
-            elif n_cols == 1:
-                names = ["Y"]
+            if n_cols == 1:
+                raw_cols = ["Y"]
             elif n_cols == 2:
-                names = ["X", "Y"]
+                raw_cols = ["X", "Y"]
             else:
-                names = ["X"] + [f"Y{j}" for j in range(1, n_cols)]
+                raw_cols = ["X"] + [f"Y{j}" for j in range(1, n_cols)]
             cols_dict = {
-                names[j]: [_coerce_scalar(raw_2d[r][j]) for r in range(n_rows)]
+                raw_cols[j]: [_coerce_scalar(raw_2d[r][j]) for r in range(n_rows)]
                 for j in range(n_cols)
             }
             if n_cols >= 2:
-                designations[names[0]] = "X"
-            return cols_dict, names, units, long_names, comments, designations
+                designations[raw_cols[0]] = "X"
+            return _apply_col_names_override(
+                raw_cols, cols_dict, units, long_names, comments, designations,
+                allow_subset=False,
+            )
         raise ValueError(f"Tabular data expects a 1D or 2D array, got shape {tuple(data.shape)}.")
 
     raise TypeError(
@@ -3713,13 +3726,23 @@ class Session:
         Undo history from before the batch is gone.
         """
         if commands is not None:
-            return self.call(
+            res = self.call(
                 "app.batch",
                 commands=[dict(c) for c in commands],
                 stop_on_error=bool(stop_on_error),
                 atomic=bool(atomic),
                 defer_replot=bool(defer_replot),
             )
+            if raise_on_error and isinstance(res, Mapping) and res.get("ok") is False:
+                err_info = res.get("error")
+                if isinstance(err_info, Mapping):
+                    code = int(err_info.get("code", -32000))
+                    msg = str(err_info.get("message", "Batch step failed"))
+                else:
+                    code = -32000
+                    msg = str(err_info or "Batch execution failed")
+                raise RpcError(code, msg, data=res)
+            return res
         return BatchContext(
             self,
             stop_on_error=stop_on_error,
@@ -4147,7 +4170,7 @@ class Session:
     # ------------------------------------------------------------------
     def create_table(
         self,
-        rows: Any = 30,
+        rows: Any = None,
         cols: Optional[int] = None,
         name: Optional[str] = None,
         *,
@@ -4163,18 +4186,24 @@ class Session:
     ) -> TableProxy:
         eff_col_names = col_names if col_names is not None else columns
 
-        # Allow passing DataFrame / ndarray / dict directly as first positional argument
-        if not isinstance(rows, (int, str)) or isinstance(rows, bool):
+        rows_explicit = False
+        if rows is None:
+            rows = 30
+        elif not isinstance(rows, (int, str)) or isinstance(rows, bool):
+            # Allow passing DataFrame / ndarray / dict directly as first positional argument
             if _is_dataframe_like(rows) or isinstance(rows, Mapping) or _is_ndarray_like(rows):
                 if data is not None:
                     raise ValueError("Specify tabular 'data' either positionally or via data=..., not both.")
                 data = rows
                 rows = 30
-
-        if isinstance(rows, str):
+            else:
+                rows_explicit = True
+        elif isinstance(rows, str):
             if name is None:
                 name = rows
             rows = 30
+        else:
+            rows_explicit = True
 
         coerced_payload: Optional[Dict[str, List[Any]]] = None
         inf_units: Dict[str, str] = {}
@@ -4195,7 +4224,7 @@ class Session:
             )
             eff_col_names = ordered_cols
             inferred_rows = max((len(v) for v in coerced_payload.values()), default=1)
-            rows = max(1, inferred_rows) if cols is None else max(int(rows), inferred_rows)
+            rows = max(int(rows), inferred_rows) if rows_explicit else max(1, inferred_rows)
 
         resolved_cols = (
             int(cols)
@@ -4237,7 +4266,7 @@ class Session:
             **kwargs,
         )
         tbl = TableProxy(self, res["name"])
-        if coerced_payload is not None:
+        if coerced_payload:
             merged_units = {**inf_units, **(dict(units) if units is not None else {})} or None
             merged_long = {**inf_long_names, **(dict(long_names) if long_names is not None else {})} or None
             merged_comm = {**inf_comments, **(dict(comments) if comments is not None else {})} or None
@@ -6722,9 +6751,16 @@ def connect(
     transport = _parse_and_connect_transport(resolved, timeout=timeout, token=token)
     session = Session(transport, rpc_timeout=rpc_timeout)
     session._reconnect_info = (resolved, float(timeout), token)
-    session.call("ping", rpc_timeout=max(1.0, float(timeout)))
-    if check_version:
-        check_app_version(session)
+    try:
+        session.call("ping", rpc_timeout=max(1.0, float(timeout)))
+        if check_version:
+            check_app_version(session)
+    except Exception:
+        try:
+            session.close()
+        except Exception:
+            pass
+        raise
     return session
 
 
@@ -6887,6 +6923,8 @@ def launch(
         )
 
     spawned_token_files: List[str] = []
+    transport: Optional[Any] = None
+    session: Optional[Session] = None
     try:
         spawned_token: Optional[str] = None
         ep_clean = discovered_endpoint.split("?", 1)[0].strip()
@@ -6915,6 +6953,16 @@ def launch(
             session.set_language(language)
         return session
     except Exception:
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
+        elif transport is not None:
+            try:
+                transport.close()
+            except Exception:
+                pass
         try:
             proc.kill()
         except Exception:

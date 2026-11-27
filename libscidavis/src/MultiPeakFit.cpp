@@ -831,6 +831,7 @@ void MultiPeakFit::setNumPeaks(int n)
         gsl_matrix_free(covar);
     covar = gsl_matrix_calloc(d_p, d_p);
     d_covar_scaled = false;
+    setProperty("_tg_mpf_covar_scales", QVariant());
     d_results.resize(d_p);
     d_initial_guesses_set = false;
 
@@ -1764,8 +1765,33 @@ void MultiPeakFit::refineSolverResult(std::vector<double> &par, int &iterations,
         return false;
     };
 
+    auto widthCarriesSign = [this](int m) -> bool {
+        if (usesCustomMultiPeakCallbacks())
+            return false;
+        const PeakProfile prof = peakProfileAt(m);
+        return prof == Gauss || prof == Lorentz || prof == PseudoVoigt;
+    };
+
     std::vector<int> escaped;
+    std::vector<int> negAmps;
+    std::vector<int> posWidths;
     for (int m = 0; m < d_peaks; ++m) {
+        if (!d_negative_peaks_allowed) {
+            const int aIdx = 3 * m;
+            const int wIdx = 3 * m + 2;
+            const bool wSign = widthCarriesSign(m);
+            const bool aFinite = (unsigned(aIdx) < d_p && std::isfinite(par[size_t(aIdx)]));
+            const bool wFinite = (unsigned(wIdx) < d_p && std::isfinite(par[size_t(wIdx)]));
+            const bool effNeg = wSign
+                    ? (aFinite && wFinite && (par[size_t(aIdx)] * par[size_t(wIdx)] < 0.0))
+                    : (aFinite && par[size_t(aIdx)] < 0.0);
+            if (effNeg) {
+                if (!isParameterFixed(aIdx) && !hasParameterBounds(aIdx))
+                    negAmps.push_back(aIdx);
+                if (wSign && !isParameterFixed(wIdx) && !hasParameterBounds(wIdx))
+                    posWidths.push_back(wIdx);
+            }
+        }
         const int idx = 3 * m + 1;
         if (unsigned(idx + 1) >= d_p || isParameterFixed(idx) || hasParameterBounds(idx))
             continue;
@@ -1785,22 +1811,49 @@ void MultiPeakFit::refineSolverResult(std::vector<double> &par, int &iterations,
         if (broad || far)
             escaped.push_back(idx);
     }
-    if (escaped.empty())
+    if (escaped.empty() && negAmps.empty() && posWidths.empty())
         return;
+
+    std::vector<std::pair<int, double>> savedInit;
+    auto ensureInitAbove = [&](int idx, double minVal) {
+        if (!d_param_init || unsigned(idx) >= d_p)
+            return;
+        const double cur = gsl_vector_get(d_param_init, size_t(idx));
+        if (!std::isfinite(cur) || cur < minVal) {
+            savedInit.push_back({ idx, cur });
+            gsl_vector_set(d_param_init, size_t(idx),
+                           std::isfinite(cur) ? std::max(std::abs(cur), minVal) : minVal);
+        }
+    };
 
     for (int idx : escaped)
         setParameterBounds(idx, xLo, xHi);
+    for (int aIdx : negAmps) {
+        setParameterBounds(aIdx, 0.0, std::numeric_limits<double>::infinity());
+        ensureInitAbove(aIdx, 0.0);
+    }
+    for (int wIdx : posWidths) {
+        setParameterBounds(wIdx, 1e-12, std::numeric_limits<double>::infinity());
+        ensureInitAbove(wIdx, 1e-12);
+    }
     int iter2 = 0, status2 = GSL_EINVAL;
     std::vector<double> par2 = (d_solver == NelderMeadSimplex) ? fitGslMultimin(iter2, status2)
                                                                : fitGslMultifit(iter2, status2);
     for (int idx : escaped)
         clearParameterBounds(idx);
+    for (int aIdx : negAmps)
+        clearParameterBounds(aIdx);
+    for (int wIdx : posWidths)
+        clearParameterBounds(wIdx);
+    for (const auto &kv : savedInit)
+        gsl_vector_set(d_param_init, size_t(kv.first), kv.second);
 
     if (status2 == GSL_SUCCESS && std::isfinite(chi_2) && chi_2 >= 0.0) {
         par = par2;
         iterations += iter2;
         status = status2;
-        d_fit_notes << tr("Peak centres that left the X range of the data were confined to it.");
+        if (!escaped.empty())
+            d_fit_notes << tr("Peak centres that left the X range of the data were confined to it.");
         return;
     }
     // The confined fit failed: restore the solver state of the original solution.
@@ -1829,6 +1882,8 @@ QVector<double> MultiPeakFit::detectPeaksSecondDerivative(int sgWindow, double r
     const int hw = win / 2;
     const int deg = (win >= 7) ? 4 : 2;
     const int mCols = deg + 1;
+
+    const double y0Est = estimateConstantBaselineY0(d_y);
 
     // Fit local Savitzky-Golay polynomial in scaled physical coordinate u = (x_k - x_i) / hScale
     std::vector<double> negD2(n, 0.0);
@@ -1891,7 +1946,17 @@ QVector<double> MultiPeakFit::detectPeaksSecondDerivative(int sgWindow, double r
         if (ok) {
             double c2 = aug[2][mCols];
             double d2y = (2.0 * c2) / (hScale * hScale);
-            negD2[i] = d_negative_peaks_allowed ? std::abs(d2y) : (-d2y);
+            if (d_negative_peaks_allowed) {
+                const double dy = d_y[i] - y0Est;
+                if (dy > 0.0)
+                    negD2[i] = std::max(0.0, -d2y);
+                else if (dy < 0.0)
+                    negD2[i] = std::max(0.0, d2y);
+                else
+                    negD2[i] = 0.0;
+            } else {
+                negD2[i] = -d2y;
+            }
         }
     }
 
@@ -1909,7 +1974,6 @@ QVector<double> MultiPeakFit::detectPeaksSecondDerivative(int sgWindow, double r
     double yMin = *std::min_element(d_y.begin(), d_y.end());
     double yMax = *std::max_element(d_y.begin(), d_y.end());
     double ySpan = std::max(0.0, yMax - yMin);
-    double y0Est = estimateConstantBaselineY0(d_y);
     double thresh = std::max(0.0, relThreshold) * maxS;
 
     struct D2Cand
@@ -2157,6 +2221,9 @@ double MultiPeakFit::covarSolverToStoredScale(int parIndex, double solverVal) co
 {
     if (!d_covar_scaled || parIndex < 0 || parIndex >= 3 * d_peaks)
         return 1.0;
+    const QVariantList saved = property("_tg_mpf_covar_scales").toList();
+    if (parIndex < saved.size())
+        return saved.at(parIndex).toDouble();
     const int rem = parIndex % 3;
     if (rem == 0) {
         double sA = (!usesCustomMultiPeakCallbacks() && d_profile == Lorentz) ? M_PI_2 : 1.0;
@@ -2181,15 +2248,46 @@ void MultiPeakFit::storeCustomFitResults(const vector<double> &par)
             parAllFinite = false;
     }
 
+    auto widthCarriesSign = [this](int j) -> bool {
+        if (usesCustomMultiPeakCallbacks())
+            return false;
+        const PeakProfile prof = peakProfileAt(j);
+        return prof == Gauss || prof == Lorentz || prof == PseudoVoigt;
+    };
+
     if (!d_covar_scaled && parAllFinite && covar && covar->size1 >= d_p && covar->size2 >= d_p) {
         d_covar_scaled = true;
         std::vector<double> scale(d_p, 1.0);
         bool anyScaled = false;
         for (unsigned i = 0; i < d_p; ++i) {
-            scale[i] = covarSolverToStoredScale(int(i), d_results[i]);
+            if (int(i) < 3 * d_peaks) {
+                const int rem = int(i) % 3;
+                if (rem == 0) {
+                    const int j = int(i) / 3;
+                    const int wIdx = 3 * j + 2;
+                    const double aOrig = d_results[i];
+                    const double wOrig =
+                            (unsigned(wIdx) < d_results.size()) ? d_results[size_t(wIdx)] : 1.0;
+                    const bool flipFromW = widthCarriesSign(j) && wOrig < 0.0;
+                    const double aAfterW = flipFromW ? -aOrig : aOrig;
+                    const bool flipFromNonNeg = !d_negative_peaks_allowed && aAfterW < 0.0;
+                    const bool netFlipA = (flipFromW != flipFromNonNeg);
+                    const double magA = (!usesCustomMultiPeakCallbacks() && d_profile == Lorentz)
+                            ? M_PI_2
+                            : 1.0;
+                    scale[i] = netFlipA ? -magA : magA;
+                } else if (rem == 2) {
+                    scale[i] = (d_results[i] < 0.0) ? -1.0 : 1.0;
+                }
+            }
             if (scale[i] != 1.0)
                 anyScaled = true;
         }
+        QVariantList scaleList;
+        scaleList.reserve(int(d_p));
+        for (double sv : scale)
+            scaleList.append(sv);
+        setProperty("_tg_mpf_covar_scales", scaleList);
         if (anyScaled) {
             for (unsigned a = 0; a < d_p; ++a) {
                 for (unsigned b = 0; b < d_p; ++b) {
@@ -2200,12 +2298,38 @@ void MultiPeakFit::storeCustomFitResults(const vector<double> &par)
         }
     }
 
+    bool ampSignFlipped = false;
     for (int j = 0; j < d_peaks && unsigned(3 * j + 2) < d_results.size(); j++) {
+        if (widthCarriesSign(j) && d_results[3 * j + 2] < 0.0)
+            d_results[3 * j] = -d_results[3 * j];
         d_results[3 * j + 2] = std::abs(d_results[3 * j + 2]);
         if (!usesCustomMultiPeakCallbacks() && d_profile == Lorentz)
             d_results[3 * j] = M_PI_2 * d_results[3 * j];
-        if (!d_negative_peaks_allowed)
+        if (!d_negative_peaks_allowed && d_results[3 * j] < 0.0) {
             d_results[3 * j] = std::abs(d_results[3 * j]);
+            ampSignFlipped = true;
+        }
+    }
+
+    if (ampSignFlipped && parAllFinite && !d_x.empty() && d_y.size() == d_x.size()
+        && d_results.size() >= size_t(3 * d_peaks + 1)) {
+        const std::vector<double> w = computeWeightsVector();
+        const double y0 = d_results[d_p - 1];
+        d_y_fit.resize(d_x.size());
+        double newChi2 = 0.0;
+        for (size_t i = 0; i < d_x.size(); ++i) {
+            double yi = y0;
+            for (int j = 0; j < d_peaks; ++j)
+                yi += evalPeakAt(d_results, j, d_x[i], true);
+            d_y_fit[i] = yi;
+            const double wi = (i < w.size()) ? w[i] : 1.0;
+            if (std::isfinite(wi) && wi > 0.0) {
+                const double r = yi - d_y[i];
+                newChi2 += wi * r * r;
+            }
+        }
+        if (std::isfinite(newChi2) && newChi2 >= 0.0)
+            chi_2 = newChi2;
     }
 
     d_last_results = d_results;
@@ -2217,7 +2341,12 @@ double MultiPeakFit::evalPeakAt(const std::vector<double> &par, int peakIndex, d
     PeakProfile prof = peakProfileAt(peakIndex);
     double A = par[3 * peakIndex];
     double xc = par[3 * peakIndex + 1];
-    double w = std::abs(par[3 * peakIndex + 2]);
+    const double rawW = par[3 * peakIndex + 2];
+    if (!isStoredResults && !usesCustomMultiPeakCallbacks()
+        && (prof == Gauss || prof == Lorentz || prof == PseudoVoigt) && rawW < 0.0) {
+        A = -A;
+    }
+    double w = std::abs(rawW);
     if (w < 1e-15)
         w = 1e-15;
     double diff = x - xc;
@@ -2435,10 +2564,16 @@ void MultiPeakFit::insertPeakFunctionCurve(std::vector<double> &x, std::vector<d
             int p = 3 * peak + j;
             formula += QString("%1=%2\n").arg(d_param_names[p]).arg(d_results[p], 0, 'g', d_prec);
         }
+        const PeakProfile prof = peakProfileAt(peak);
+        const double alpha =
+                (prof == DoniachSunjic) ? effectiveDoniachAlpha(d_asym_alpha) : d_asym_alpha;
+        const QString term = (d_peaks == 1)
+                ? peakTerm(QString(), prof, d_voigt_mu, d_pearson_m, alpha, d_tail_tau)
+                : instancePeakFormula(peak + 1, prof);
         formula += QString("%1=%2\n\ny0+%3")
                            .arg(d_param_names[d_p - 1])
                            .arg(effY0, 1, 'g', d_prec)
-                           .arg(instancePeakFormula(peak + 1, peakProfileAt(peak)));
+                           .arg(term);
         c->setFormula(formula);
     }
     attachToSourceAxes(c);
@@ -3731,9 +3866,9 @@ void MultiPeakFit::showBatchPeakDialog(ApplicationWindow *app, Graph *g)
             if (curve) {
                 if (graph && graph->plotWidget()) {
                     curve->detach();
+                    delete curve;
                     graph->replot();
                 }
-                delete curve;
                 curve = nullptr;
             }
         }
@@ -3826,7 +3961,7 @@ void MultiPeakFit::showBatchPeakDialog(ApplicationWindow *app, Graph *g)
 
     const int rc = dlg.exec();
     previewGuard.clear();
-    if (rc != QDialog::Accepted)
+    if (rc != QDialog::Accepted || !previewGuard.graph)
         return;
 
     QStringList selectedCurves;
@@ -3839,7 +3974,8 @@ void MultiPeakFit::showBatchPeakDialog(ApplicationWindow *app, Graph *g)
 
     PeakProfile selProf = static_cast<PeakProfile>(profileBox->currentData().toInt());
     BaselineMode selBase = static_cast<BaselineMode>(baseBox->currentData().toInt());
-    batchAnalyzeCurves(app, g, selectedCurves, selProf, selBase, negPeaksChk->isChecked());
+    batchAnalyzeCurves(app, previewGuard.graph.data(), selectedCurves, selProf, selBase,
+                       negPeaksChk->isChecked());
 }
 
 /*****************************************************************************
@@ -4014,8 +4150,12 @@ void GaussAmpFit::guessInitialValues()
 bool GaussAmpFit::calculateFitCurveData(const vector<double> &par, std::vector<double> &X,
                                         std::vector<double> &Y)
 {
-    generateX(X);
+    if (par.size() < 4)
+        return false;
     double w2 = par[3] * par[3];
+    if (!std::isfinite(w2) || !(w2 > 1e-300))
+        return false;
+    generateX(X);
     for (int i = 0; i < d_points; i++) {
         double diff = X[i] - par[2];
         Y[i] = par[1] * exp(-0.5 * diff * diff / w2) + par[0];

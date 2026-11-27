@@ -2635,7 +2635,7 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Modify Axis"));
         if (params.contains(QStringLiteral("enabled"))
             && !params.value(QStringLiteral("enabled")).isNull()) {
-            g->enableAxis(ax, params.value(QStringLiteral("enabled")).toBool(true));
+            g->enableAxis(ax, optionalJsonBool(params, QStringLiteral("enabled"), true));
         }
 
         Plot *plt = g->plotWidget();
@@ -2921,38 +2921,38 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
 
         if (params.contains(QStringLiteral("show_labels"))
             && !params.value(QStringLiteral("show_labels")).isNull()) {
-            const bool showLbl = params.value(QStringLiteral("show_labels")).toBool(true);
+            const bool showLbl = optionalJsonBool(params, QStringLiteral("show_labels"), true);
             if (showLbl && plt && !plt->axisEnabled(ax))
                 g->enableAxis(ax, true);
             g->setTickLabelsOnAxis(ax, showLbl);
         }
 
-        if (params.contains(QStringLiteral("show_ticks"))
-            && !params.value(QStringLiteral("show_ticks")).isNull() && plt) {
-            const bool showTks = params.value(QStringLiteral("show_ticks")).toBool(true);
+        const bool hasShowTicks = params.contains(QStringLiteral("show_ticks"))
+                && !params.value(QStringLiteral("show_ticks")).isNull();
+        const bool showTks = hasShowTicks
+                ? optionalJsonBool(params, QStringLiteral("show_ticks"), true)
+                : true;
+        const bool hasTicksInward = params.contains(QStringLiteral("ticks_inward"))
+                && !params.value(QStringLiteral("ticks_inward")).isNull();
+        const bool ticksInward = hasTicksInward
+                ? optionalJsonBool(params, QStringLiteral("ticks_inward"), true)
+                : true;
+
+        if (hasShowTicks && plt) {
             if (showTks && !plt->axisEnabled(ax))
                 g->enableAxis(ax, true);
             if (!showTks) {
                 plt->setMajorTicksType(ax, ScaleDraw::None);
                 plt->setMinorTicksType(ax, ScaleDraw::None);
             } else {
-                const int ts = params.value(QStringLiteral("ticks_inward")).toBool(true)
-                        ? ScaleDraw::In
-                        : ScaleDraw::Out;
+                const int ts = ticksInward ? ScaleDraw::In : ScaleDraw::Out;
                 plt->setMajorTicksType(ax, ts);
                 plt->setMinorTicksType(ax, ts);
             }
-        }
-
-        if (params.contains(QStringLiteral("ticks_inward"))
-            && !params.value(QStringLiteral("ticks_inward")).isNull() && plt) {
-            if (auto *sd = dynamic_cast<ScaleDraw *>(plt->axisScaleDraw(ax))) {
-                const auto ts = params.value(QStringLiteral("ticks_inward")).toBool()
-                        ? ScaleDraw::In
-                        : ScaleDraw::Out;
-                sd->setMajorTicksStyle(ts);
-                sd->setMinorTicksStyle(ts);
-            }
+        } else if (hasTicksInward && plt) {
+            const int ts = ticksInward ? ScaleDraw::In : ScaleDraw::Out;
+            plt->setMajorTicksType(ax, ts);
+            plt->setMinorTicksType(ax, ts);
         }
         if ((params.contains(QStringLiteral("show_backbone"))
              && !params.value(QStringLiteral("show_backbone")).isNull())
@@ -3161,6 +3161,22 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
                                     .arg(axMin)
                                     .arg(axMax));
                 }
+                if (spec.log10Before && (!std::isfinite(axMin) || axMin <= 0.0)) {
+                    throwInvalidParams(
+                            QStringLiteral("Axis break with log_before=true requires current axis minimum > 0, got %1.")
+                                    .arg(axMin));
+                }
+                if (spec.log10After && (!std::isfinite(axMax) || axMax <= 0.0)) {
+                    throwInvalidParams(
+                            QStringLiteral("Axis break with log_after=true requires current axis maximum > 0, got %1.")
+                                    .arg(axMax));
+                }
+            }
+            if (spec.breakTo <= spec.breakFrom + 1e-15) {
+                throwInvalidParams(
+                        QStringLiteral("Axis break width must be > 1e-15, got [%1, %2].")
+                                .arg(spec.breakFrom)
+                                .arg(spec.breakTo));
             }
             g->setAxisBreak(ax, spec);
         }
@@ -3469,8 +3485,9 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
         }
 
         QColor col = c->pen().color();
-        if (params.contains(QStringLiteral("fill_area"))) {
-            if (params.value(QStringLiteral("fill_area")).toBool(false)) {
+        if (params.contains(QStringLiteral("fill_area"))
+            && !params.value(QStringLiteral("fill_area")).isNull()) {
+            if (optionalJsonBool(params, QStringLiteral("fill_area"), false)) {
                 QColor fc = parseColorValue(params.value(QStringLiteral("fill_color")), col);
                 if (!params.contains(QStringLiteral("fill_color")))
                     fc.setAlpha(64);
@@ -3542,7 +3559,7 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
 
         if (params.contains(QStringLiteral("visible"))
             && !params.value(QStringLiteral("visible")).isNull()) {
-            g->showCurve(cIdx, params.value(QStringLiteral("visible")).toBool(true));
+            g->showCurve(cIdx, optionalJsonBool(params, QStringLiteral("visible"), true));
         }
 
         g->replot();
@@ -3585,9 +3602,7 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
                             .arg(g->curves())
                             .arg(ml->name()));
         }
-        const bool visible = params.contains(QStringLiteral("visible"))
-                ? params.value(QStringLiteral("visible")).toBool(true)
-                : true;
+        const bool visible = optionalJsonBool(params, QStringLiteral("visible"), true);
         ScopedGraphUndoGuard undoGuard(
                 ml, visible ? QObject::tr("Show Curve") : QObject::tr("Hide Curve"));
         g->showCurve(idx, visible);
@@ -3716,7 +3731,7 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
         const QJsonValue modeVal = params.value(QStringLiteral("mode"));
         const QString modeStr = modeVal.toString().trimmed().toLower();
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Stack Offsets"));
-        if (params.value(QStringLiteral("reset")).toBool(false)
+        if (optionalJsonBool(params, QStringLiteral("reset"), false)
             || modeStr == QStringLiteral("none") || modeStr == QStringLiteral("off")
             || modeStr == QStringLiteral("reset")) {
             g->resetStackOffsets();
@@ -4144,9 +4159,7 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
 
     if (method == QStringLiteral("graph.set_panel_labels")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
-        const bool enabled = params.contains(QStringLiteral("enabled"))
-                ? params.value(QStringLiteral("enabled")).toBool(true)
-                : true;
+        const bool enabled = optionalJsonBool(params, QStringLiteral("enabled"), true);
         QString placementRaw =
                 (params.contains(QStringLiteral("placement"))
                  && !params.value(QStringLiteral("placement")).isNull())
@@ -4743,8 +4756,8 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
                         ? parseBoundedInt(params, QStringLiteral("dpi"), 300, 36, 2400)
                         : 0;
                 targetG3D->exportImage(tmp3d,
-                                       params.value(QStringLiteral("quality")).toInt(100),
-                                       params.value(QStringLiteral("transparent")).toBool(false),
+                                       parseBoundedInt(params, QStringLiteral("quality"), 100, 1, 100),
+                                       optionalJsonBool(params, QStringLiteral("transparent"), false),
                                        dpi3d);
             }
             if (!is3dEmf) {
@@ -4963,7 +4976,7 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
                 undoGuard.commit();
             }
         }
-        Graph *singleG = params.value(QStringLiteral("active_layer_only")).toBool(false)
+        Graph *singleG = optionalJsonBool(params, QStringLiteral("active_layer_only"), false)
                 ? ml->activeGraph()
                 : nullptr;
         const bool ok = SciDAVisOle::copyGraphAsOle(d_app, ml, singleG);
@@ -5438,7 +5451,8 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
                     (reqZ <= 10.0 && baseHullZoom > 10.0) ? (reqZ * baseHullZoom) : reqZ;
             g3d->setZoom(effZoom);
         }
-        if (params.contains(QStringLiteral("orthogonal")))
+        if (params.contains(QStringLiteral("orthogonal"))
+            && !params.value(QStringLiteral("orthogonal")).isNull())
             g3d->setOrtho(optionalJsonBool(params, QStringLiteral("orthogonal"), true));
 
         if (params.contains(QStringLiteral("scale"))
@@ -5577,7 +5591,8 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
             }
         }
 
-        if (params.contains(QStringLiteral("style"))) {
+        if (params.contains(QStringLiteral("style"))
+            && !params.value(QStringLiteral("style")).isNull()) {
             const QString st = params.value(QStringLiteral("style")).toString().trimmed().toLower();
             if (st == QStringLiteral("wireframe") || st == QStringLiteral("mesh"))
                 g3d->setLineGrid();
@@ -5598,7 +5613,8 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
                                 .arg(st));
         }
 
-        if (params.contains(QStringLiteral("coord_style"))) {
+        if (params.contains(QStringLiteral("coord_style"))
+            && !params.value(QStringLiteral("coord_style")).isNull()) {
             const QString cs =
                     params.value(QStringLiteral("coord_style")).toString().trimmed().toLower();
             if (cs == QStringLiteral("box") || cs == QStringLiteral("boxed"))
@@ -5613,19 +5629,22 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
                                 .arg(cs));
         }
 
-        if (params.contains(QStringLiteral("title"))
-            || params.contains(QStringLiteral("title_color"))
-            || params.contains(QStringLiteral("title_font_size"))) {
-            const QString tStr = params.contains(QStringLiteral("title"))
+        const bool hasTitle = params.contains(QStringLiteral("title"))
+                && !params.value(QStringLiteral("title")).isNull();
+        const bool hasTitleColor = params.contains(QStringLiteral("title_color"))
+                && !params.value(QStringLiteral("title_color")).isNull();
+        const bool hasTitleFontSize = params.contains(QStringLiteral("title_font_size"))
+                && !params.value(QStringLiteral("title_font_size")).isNull();
+        if (hasTitle || hasTitleColor || hasTitleFontSize) {
+            const QString tStr = hasTitle
                     ? params.value(QStringLiteral("title")).toString()
                     : g3d->plotTitle();
-            const QColor tCol = params.contains(QStringLiteral("title_color"))
+            const QColor tCol = hasTitleColor
                     ? parseColorValue(params.value(QStringLiteral("title_color")), g3d->titleColor())
                     : g3d->titleColor();
             QFont tFont = g3d->titleFont();
             tFont.setFamily(QStringLiteral("Arial"));
-            if (params.contains(QStringLiteral("title_font_size"))
-                && !params.value(QStringLiteral("title_font_size")).isNull()) {
+            if (hasTitleFontSize) {
                 tFont.setPointSize(std::max(
                         4, parseStrictJsonInt(params.value(QStringLiteral("title_font_size")),
                                               QStringLiteral("title_font_size"))));
@@ -5667,7 +5686,7 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
         if (!cmapStr.isEmpty() && g3d->sp) {
             bool isGray = false;
             (void)parseColorMapPreset(cmapStr, &isGray, true);
-            const bool rev = params.value(QStringLiteral("reverse_colormap")).toBool(false);
+            const bool rev = optionalJsonBool(params, QStringLiteral("reverse_colormap"), false);
             g3d->setDataColorMapPreset(cmapStr, rev);
             g3d->sp->updateData();
             if (g3d->isLegendOn()) {
@@ -5691,19 +5710,23 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
             && !params.value(QStringLiteral("resolution")).isNull()) {
             g3d->setResolution(parseBoundedInt(params, QStringLiteral("resolution"), 1, 1, 32));
         }
-        if (params.contains(QStringLiteral("legend"))
-            || params.contains(QStringLiteral("colorbar"))) {
-            const bool showLeg = params.contains(QStringLiteral("legend"))
-                    ? params.value(QStringLiteral("legend")).toBool(true)
-                    : params.value(QStringLiteral("colorbar")).toBool(true);
+        if ((params.contains(QStringLiteral("legend"))
+             && !params.value(QStringLiteral("legend")).isNull())
+            || (params.contains(QStringLiteral("colorbar"))
+                && !params.value(QStringLiteral("colorbar")).isNull())) {
+            const bool showLeg = (params.contains(QStringLiteral("legend"))
+                                  && !params.value(QStringLiteral("legend")).isNull())
+                    ? optionalJsonBool(params, QStringLiteral("legend"), true)
+                    : optionalJsonBool(params, QStringLiteral("colorbar"), true);
             g3d->showColorLegend(showLeg);
         }
         if (params.contains(QStringLiteral("mesh_line_width"))) {
             g3d->setMeshLineWidth(std::max(
                     1, params.value(QStringLiteral("mesh_line_width")).toInt(1)));
         }
-        if (params.contains(QStringLiteral("smooth_mesh")))
-            g3d->setSmoothMesh(params.value(QStringLiteral("smooth_mesh")).toBool(true));
+        if (params.contains(QStringLiteral("smooth_mesh"))
+            && !params.value(QStringLiteral("smooth_mesh")).isNull())
+            g3d->setSmoothMesh(optionalJsonBool(params, QStringLiteral("smooth_mesh"), true));
 
         enforceArialGraph3DFonts(g3d);
         g3d->update();

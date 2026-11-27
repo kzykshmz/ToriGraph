@@ -724,6 +724,12 @@ QSet<QString> &explicitlyConfirmedUnverifiedScripts()
     return s_scripts;
 }
 
+QHash<QString, QByteArray> &stagedScriptDigests()
+{
+    static QHash<QString, QByteArray> s_digests;
+    return s_digests;
+}
+
 QString canonicalScriptKey(const QString &scriptPath)
 {
     const QFileInfo fi(scriptPath);
@@ -1573,6 +1579,7 @@ void UpdateAvailableDialog::offerInstallAfterDownload(bool verified)
     }
     if (ans != QMessageBox::Yes) {
         if (d_stagedScriptPath.endsWith(QStringLiteral(".ps1"), Qt::CaseInsensitive)) {
+            stagedScriptDigests().remove(canonicalScriptKey(d_stagedScriptPath));
             QFile::remove(d_stagedScriptPath);
             QFile::remove(d_stagedScriptPath.left(d_stagedScriptPath.size() - 4)
                           + QStringLiteral(".cmd"));
@@ -2642,23 +2649,67 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "$CreatedFiles = New-Object System.Collections.Generic.List[string]\r\n"
             "$CreatedDirs = New-Object System.Collections.Generic.List[string]\r\n"
             "$RollbackFailed = $false\r\n\r\n"
-            "# (3) Extract .zip via Expand-Archive or run installer, (4) restore full backup on error\r\n"
+            "# (3) Safe ZIP extraction (replaces Expand-Archive) or run installer, (4) restore full backup on error\r\n"
             "try {\r\n"
             "    $ext = [System.IO.Path]::GetExtension($DownloadedFile).ToLowerInvariant()\r\n"
             "    if ($ext -eq '.zip') {\r\n"
-            "        if ($DownloadedFile -match '[\\[\\]]' -or $ExtractDir -match '[\\[\\]]') {\r\n"
-            "            Add-Type -AssemblyName System.IO.Compression.FileSystem\r\n"
-            "            [System.IO.Compression.ZipFile]::ExtractToDirectory($DownloadedFile, $ExtractDir)\r\n"
-            "        } else {\r\n"
-            "            try {\r\n"
-            "                Expand-Archive -LiteralPath $DownloadedFile -DestinationPath $ExtractDir -Force\r\n"
-            "            } catch {\r\n"
-            "                if (Test-Path -LiteralPath $ExtractDir) {\r\n"
-            "                    Remove-Item -LiteralPath $ExtractDir -Recurse -Force -ErrorAction SilentlyContinue\r\n"
-            "                }\r\n"
-            "                Add-Type -AssemblyName System.IO.Compression.FileSystem\r\n"
-            "                [System.IO.Compression.ZipFile]::ExtractToDirectory($DownloadedFile, $ExtractDir)\r\n"
+            "        Add-Type -AssemblyName System.IO.Compression.FileSystem\r\n"
+            "        if (Test-Path -LiteralPath $ExtractDir) {\r\n"
+            "            Remove-Item -LiteralPath $ExtractDir -Recurse -Force -ErrorAction SilentlyContinue\r\n"
+            "        }\r\n"
+            "        [System.IO.Directory]::CreateDirectory($ExtractDir) | Out-Null\r\n"
+            "        $extractFull = [System.IO.Path]::GetFullPath($ExtractDir)\r\n"
+            "        if (-not $extractFull.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {\r\n"
+            "            $extractFull += [System.IO.Path]::DirectorySeparatorChar\r\n"
+            "        }\r\n"
+            "        $maxZipEntries = 20000\r\n"
+            "        $maxZipBytes = [int64]1073741824\r\n"
+            "        $totalExtractedBytes = [int64]0\r\n"
+            "        $zipArch = [System.IO.Compression.ZipFile]::OpenRead($DownloadedFile)\r\n"
+            "        try {\r\n"
+            "            if ($zipArch.Entries.Count -gt $maxZipEntries) {\r\n"
+            "                throw \"Update archive exceeds maximum allowed entry count ($($zipArch.Entries.Count)).\"\r\n"
             "            }\r\n"
+            "            $buf = New-Object byte[] 65536\r\n"
+            "            foreach ($ze in $zipArch.Entries) {\r\n"
+            "                $rawName = $ze.FullName\r\n"
+            "                if ([string]::IsNullOrWhiteSpace($rawName)) { continue }\r\n"
+            "                if ($rawName.StartsWith('/') -or $rawName.StartsWith('\\') -or ($rawName -match '^[A-Za-z]:')) {\r\n"
+            "                    throw \"Rejected unsafe absolute path in update archive: $rawName\"\r\n"
+            "                }\r\n"
+            "                $normRel = $rawName.Replace('/', [System.IO.Path]::DirectorySeparatorChar)\r\n"
+            "                $destFull = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($extractFull, $normRel))\r\n"
+            "                if (-not $destFull.StartsWith($extractFull, [System.StringComparison]::OrdinalIgnoreCase)) {\r\n"
+            "                    throw \"Rejected path traversal entry in update archive: $rawName\"\r\n"
+            "                }\r\n"
+            "                if ($rawName.EndsWith('/') -or $rawName.EndsWith('\\')) {\r\n"
+            "                    [System.IO.Directory]::CreateDirectory($destFull) | Out-Null\r\n"
+            "                    continue\r\n"
+            "                }\r\n"
+            "                $parentDir = [System.IO.Path]::GetDirectoryName($destFull)\r\n"
+            "                if ($parentDir -and !(Test-Path -LiteralPath $parentDir)) {\r\n"
+            "                    [System.IO.Directory]::CreateDirectory($parentDir) | Out-Null\r\n"
+            "                }\r\n"
+            "                $inStream = $ze.Open()\r\n"
+            "                try {\r\n"
+            "                    $outStream = [System.IO.File]::Create($destFull)\r\n"
+            "                    try {\r\n"
+            "                        while (($nRead = $inStream.Read($buf, 0, $buf.Length)) -gt 0) {\r\n"
+            "                            $totalExtractedBytes += $nRead\r\n"
+            "                            if ($totalExtractedBytes -gt $maxZipBytes) {\r\n"
+            "                                throw \"Update archive exceeds maximum allowed decompressed size (1 GB).\"\r\n"
+            "                            }\r\n"
+            "                            $outStream.Write($buf, 0, $nRead)\r\n"
+            "                        }\r\n"
+            "                    } finally {\r\n"
+            "                        $outStream.Dispose()\r\n"
+            "                    }\r\n"
+            "                } finally {\r\n"
+            "                    $inStream.Dispose()\r\n"
+            "                }\r\n"
+            "            }\r\n"
+            "        } finally {\r\n"
+            "            $zipArch.Dispose()\r\n"
             "        }\r\n"
             "        $entries = @(Get-ChildItem -LiteralPath $ExtractDir -Force)\r\n"
             "        $copyRoot = $ExtractDir\r\n"
@@ -2683,9 +2734,9 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "            if ($binNode.PSIsContainer -or ($binNode.FullName -ieq $candExe)) { continue }\r\n"
             "            $binExt = [System.IO.Path]::GetExtension($binNode.Name).ToLowerInvariant()\r\n"
             "            if ($binExt -eq '.exe') {\r\n"
-            "                Test-AuthenticodeFile -FilePath $binNode.FullName -MustBeSigned $RequireSignature -CheckSubject $false\r\n"
+            "                Test-AuthenticodeFile -FilePath $binNode.FullName -MustBeSigned $RequireSignature -CheckSubject $true\r\n"
             "            } elseif ($binExt -eq '.dll' -or $binExt -eq '.pyd') {\r\n"
-            "                Test-AuthenticodeFile -FilePath $binNode.FullName -MustBeSigned $false -CheckSubject $false\r\n"
+            "                Test-AuthenticodeFile -FilePath $binNode.FullName -MustBeSigned $RequireSignature -CheckSubject $false\r\n"
             "            }\r\n"
             "        }\r\n"
             "        foreach ($node in $allNodes) {\r\n"
@@ -2869,9 +2920,20 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
         return QString();
     }
     // Write UTF-8 BOM so Windows PowerShell 5.1 parses Unicode paths accurately
-    psFile.write("\xEF\xBB\xBF", 3);
-    psFile.write(psScript.toUtf8());
+    QByteArray ps1Raw;
+    ps1Raw.append("\xEF\xBB\xBF", 3);
+    ps1Raw.append(psScript.toUtf8());
+    if (psFile.write(ps1Raw) != ps1Raw.size()) {
+        psFile.close();
+        QFile::remove(ps1Path);
+        if (errOut)
+            *errOut = tr("Could not write PowerShell staging script: %1").arg(ps1Path);
+        return QString();
+    }
     psFile.close();
+    stagedScriptDigests().insert(
+            canonicalScriptKey(ps1Path),
+            QCryptographicHash::hash(ps1Raw, QCryptographicHash::Sha256));
 
     // (The former companion apply_torigraph_update.cmd wrapper was never executed by the
     // application and only widened the attack surface of the staging folder; it is gone.)
@@ -3051,6 +3113,8 @@ bool AutoUpdater::closeAppAndLaunchUpdater(ApplicationWindow *app, const QString
     // pinned digest and runs those very bytes from memory. The script itself lives in a
     // user-writable folder, so it must never be executed elevated straight from disk.
     QByteArray scriptRawBytes;
+    const QString canonKey = canonicalScriptKey(scriptPath);
+    const QByteArray expectedDigest = stagedScriptDigests().take(canonKey);
     {
         QFile sf(scriptPath);
         QString scriptText;
@@ -3070,6 +3134,19 @@ bool AutoUpdater::closeAppAndLaunchUpdater(ApplicationWindow *app, const QString
                     releasePage);
             return false;
         }
+        if (!expectedDigest.isEmpty()) {
+            const QByteArray actualDigest =
+                    QCryptographicHash::hash(scriptRawBytes, QCryptographicHash::Sha256);
+            if (actualDigest != expectedDigest) {
+                QFile::remove(scriptPath);
+                showFailureWithReleasePage(
+                        app, tr("Security Verification Failed"),
+                        tr("The staged update script was modified after it was generated, so "
+                           "installation was blocked."),
+                        releasePage);
+                return false;
+            }
+        }
         static const QRegularExpression shaRe(
                 QStringLiteral("^\\$ExpectedSha256\\s*=\\s*'([^']*)'"),
                 QRegularExpression::MultilineOption);
@@ -3077,7 +3154,6 @@ bool AutoUpdater::closeAppAndLaunchUpdater(ApplicationWindow *app, const QString
         const QString scriptSha =
                 shaMatch.hasMatch() ? normalizeSha256Token(shaMatch.captured(1)) : QString();
         if (scriptSha.isEmpty()) {
-            const QString canonKey = canonicalScriptKey(scriptPath);
             const bool preConfirmed =
                     explicitlyConfirmedUnverifiedScripts().remove(canonKey);
             if (!isInteractiveGuiContext(app) || !allowUnverifiedInstall()) {
@@ -3131,6 +3207,14 @@ bool AutoUpdater::closeAppAndLaunchUpdater(ApplicationWindow *app, const QString
     }
     const QString installDir = QCoreApplication::applicationDirPath();
     const bool elevate = !isDirectoryWritable(installDir);
+    if (elevate && expectedDigest.isEmpty()) {
+        showFailureWithReleasePage(
+                app, tr("Security Verification Failed"),
+                tr("The staged update script was not verified in memory, so elevated "
+                   "installation was blocked."),
+                releasePage);
+        return false;
+    }
     if (elevate && !isHeadlessOrEmbeddedProcess(app)) {
         const QMessageBox::StandardButton ans = QMessageBox::question(
                 app, tr("Administrator Rights Needed"),

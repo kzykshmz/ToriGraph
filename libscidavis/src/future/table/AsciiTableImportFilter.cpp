@@ -336,7 +336,7 @@ bool tryParseAsciiDoubleSpan(const QChar *ptr, int len, double &outVal, bool dec
     if (n <= 0)
         return false;
     const int startIdx = (buf[0] == '+') ? 1 : 0;
-    if (startIdx >= n)
+    if (startIdx >= n || (startIdx == 1 && (buf[1] == '-' || buf[1] == '+')))
         return false;
     double val = 0.0;
     const auto res = std::from_chars(buf + startIdx, buf + n, val);
@@ -1239,19 +1239,29 @@ future::Table *tryParseVaspTextInternal(const QString &decoded, const QString &e
     if (!hasCarTag && !nameIsDoscar && !nameIsEigenval)
         return nullptr;
 
+    auto safeDoubleToInt = [](double v, int lo, int hi, int &out) -> bool {
+        if (!std::isfinite(v) || v < double(lo) - 0.5 || v > double(hi) + 0.5)
+            return false;
+        const long long r = std::llround(v);
+        if (r < lo || r > hi)
+            return false;
+        out = static_cast<int>(r);
+        return true;
+    };
+
     // 1. VASP DOSCAR: line 5 has 5 tokens <EMAX> <EMIN> <NEDOS> <EFERMI> <WEIGHT>
     if ((v5.size() == 5 && !nameIsEigenval) || nameIsDoscar) {
         if (v5.size() < 5)
             return nullptr;
-        const int nedos = static_cast<int>(std::llround(v5[2]));
-        const double efermi = v5[3];
-        if (nedos < 2 || nedos > 200000)
+        int nedos = 0;
+        if (!safeDoubleToInt(v5[2], 2, 200000, nedos))
             return nullptr;
+        const double efermi = v5[3];
         if (outFermiEV)
             *outFermiEV = efermi;
 
         QVector<QVector<double>> totalRows;
-        totalRows.reserve(nedos);
+        totalRows.reserve(std::min(nedos, 4096));
         int totCols = 0;
         for (int r = 0; r < nedos && pos < len; ++r) {
             const QString dl = readLineTrimmed();
@@ -1279,8 +1289,9 @@ future::Table *tryParseVaspTextInternal(const QString &decoded, const QString &e
             if (hdr.isEmpty())
                 continue;
             QVector<double> hv;
+            int hNedos = 0;
             if (!splitDoubles(hdr, hv) || hv.size() != 5
-                || static_cast<int>(std::llround(hv[2])) != nedos) {
+                || !safeDoubleToInt(hv[2], 2, 200000, hNedos) || hNedos != nedos) {
                 break;
             }
             for (int r = 0; r < nedos && pos < len; ++r) {
@@ -1396,15 +1407,20 @@ future::Table *tryParseVaspTextInternal(const QString &decoded, const QString &e
         if (v5.size() < 3)
             return nullptr;
         const double nelect = v5[0];
-        const int nkpts = static_cast<int>(std::llround(v5[1]));
-        const int nbands = static_cast<int>(std::llround(v5[2]));
-        const int ispin = std::clamp(static_cast<int>(std::llround(v0[3])), 1, 2);
-        if (nkpts < 1 || nkpts > 50000 || nbands < 1 || nbands > 2048)
+        int nkpts = 0;
+        int nbands = 0;
+        if (!safeDoubleToInt(v5[1], 1, 50000, nkpts) || !safeDoubleToInt(v5[2], 1, 2048, nbands))
+            return nullptr;
+        int ispin = 1;
+        if (!safeDoubleToInt(v0[3], 1, 2, ispin))
+            ispin = (std::isfinite(v0[3]) && v0[3] >= 2.0) ? 2 : 1;
+        const int totalCols = 4 + nbands * ispin;
+        if (totalCols > g_maxImportColumns)
             return nullptr;
 
-        QVector<double> kx(nkpts, 0.0), ky(nkpts, 0.0), kz(nkpts, 0.0), kDist(nkpts, 0.0);
-        QVector<QVector<double>> bandsUp(nbands, QVector<double>(nkpts, 0.0));
-        QVector<QVector<double>> bandsDw(ispin == 2 ? nbands : 0, QVector<double>(nkpts, 0.0));
+        QVector<double> kx, ky, kz, kDist;
+        QVector<QVector<double>> bandsUpRows;
+        QVector<QVector<double>> bandsDwRows;
 
         bool hasOcc = false;
         double maxOccEnergy = -std::numeric_limits<double>::infinity();
@@ -1420,16 +1436,11 @@ future::Table *tryParseVaspTextInternal(const QString &decoded, const QString &e
             QVector<double> kv;
             if (!splitDoubles(khdr, kv) || kv.size() < 4)
                 break;
-            kx[k] = kv[0];
-            ky[k] = kv[1];
-            kz[k] = kv[2];
-            if (k > 0) {
-                const double dx = kx[k] - kx[k - 1];
-                const double dy = ky[k] - ky[k - 1];
-                const double dz = kz[k] - kz[k - 1];
-                const double dk = std::sqrt(dx * dx + dy * dy + dz * dz);
-                kDist[k] = kDist[k - 1] + ((dk > 0.5) ? 0.0 : dk);
-            }
+            if (qint64(actualK + 1) * qint64(totalCols) > g_maxImportCells)
+                break;
+
+            QVector<double> upRow(nbands, 0.0);
+            QVector<double> dwRow(ispin == 2 ? nbands : 0, 0.0);
             for (int b = 0; b < nbands && pos < len; ++b) {
                 const QString bl = readLineTrimmed();
                 if (bl.isEmpty()) {
@@ -1439,9 +1450,9 @@ future::Table *tryParseVaspTextInternal(const QString &decoded, const QString &e
                 QVector<double> bv;
                 if (!splitDoubles(bl, bv) || bv.size() < 2)
                     break;
-                bandsUp[b][k] = bv[1];
+                upRow[b] = bv[1];
                 if (ispin == 2 && bv.size() >= 3) {
-                    bandsDw[b][k] = bv[2];
+                    dwRow[b] = bv[2];
                     if (bv.size() >= 5) {
                         hasOcc = true;
                         if (bv[3] >= 0.5)
@@ -1455,6 +1466,21 @@ future::Table *tryParseVaspTextInternal(const QString &decoded, const QString &e
                         maxOccEnergy = std::max(maxOccEnergy, bv[1]);
                 }
             }
+            kx.append(kv[0]);
+            ky.append(kv[1]);
+            kz.append(kv[2]);
+            double kd = 0.0;
+            if (actualK > 0) {
+                const double dx = kv[0] - kx[actualK - 1];
+                const double dy = kv[1] - ky[actualK - 1];
+                const double dz = kv[2] - kz[actualK - 1];
+                const double dk = std::sqrt(dx * dx + dy * dy + dz * dz);
+                kd = kDist[actualK - 1] + ((dk > 0.5) ? 0.0 : dk);
+            }
+            kDist.append(kd);
+            bandsUpRows.append(std::move(upRow));
+            if (ispin == 2)
+                bandsDwRows.append(std::move(dwRow));
             ++actualK;
         }
         if (actualK < 1)
@@ -1464,16 +1490,31 @@ future::Table *tryParseVaspTextInternal(const QString &decoded, const QString &e
         if (hasOcc && std::isfinite(maxOccEnergy)) {
             estFermi = maxOccEnergy;
         } else {
-            const int occBandIdx = std::clamp(static_cast<int>(std::floor(nelect / 2.0)) - 1, 0,
-                                              nbands - 1);
+            int occBandIdx = 0;
+            if (std::isfinite(nelect)) {
+                const double half = std::floor(nelect / 2.0) - 1.0;
+                occBandIdx = (half <= 0.0)
+                        ? 0
+                        : ((half >= double(nbands - 1)) ? (nbands - 1) : static_cast<int>(half));
+            }
             double vbm = -std::numeric_limits<double>::infinity();
             for (int k = 0; k < actualK; ++k)
-                vbm = std::max(vbm, bandsUp[occBandIdx][k]);
+                vbm = std::max(vbm, bandsUpRows[k][occBandIdx]);
             if (std::isfinite(vbm))
                 estFermi = vbm;
         }
         if (outFermiEV)
             *outFermiEV = estFermi;
+
+        QVector<QVector<double>> bandsUp(nbands, QVector<double>(actualK, 0.0));
+        QVector<QVector<double>> bandsDw(ispin == 2 ? nbands : 0, QVector<double>(actualK, 0.0));
+        for (int k = 0; k < actualK; ++k) {
+            for (int b = 0; b < nbands; ++b) {
+                bandsUp[b][k] = bandsUpRows[k][b];
+                if (ispin == 2)
+                    bandsDw[b][k] = bandsDwRows[k][b];
+            }
+        }
 
         QList<Column *> cols;
         auto appendVecCol = [&](const QString &nm, const QString &lnm, const QString &u,
@@ -1848,7 +1889,7 @@ future::Table *tryParseSpecTextInternal(const QString &decoded, const QString &e
         } else if (t.startsWith(QLatin1String("#N")) && (t.size() == 2 || t.at(2).isSpace())) {
             bool okN = false;
             const int n = t.mid(2).trimmed().section(QRegularExpression(QStringLiteral("\\s+")), 0, 0).toInt(&okN);
-            if (okN && n > 0)
+            if (okN && n > 0 && n <= g_maxImportColumns)
                 cur.declaredCols = n;
         } else if (t.startsWith(QLatin1Char('#'))) {
             // other SPEC directives (#D, #T, #M, #P0, #C, #@...)
@@ -1910,16 +1951,32 @@ future::Table *tryParseSpecTextInternal(const QString &decoded, const QString &e
     int maxDataRows = 0;
     int missingCells = 0;
     int textCols = 0;
+    qint64 totalAllocatedCells = 0;
     for (int sIdx = 0; sIdx < nonEmptyScans.size(); ++sIdx) {
         const SpecScan &sc = nonEmptyScans.at(sIdx);
-        int nCols = sc.declaredCols;
+        int actualMaxCols = 0;
         for (const QStringList &r : sc.rows)
-            nCols = std::max(nCols, int(r.size()));
+            actualMaxCols = std::max(actualMaxCols, int(r.size()));
+        int nCols = actualMaxCols;
+        if (sc.declaredCols > nCols && sc.declaredCols <= g_maxImportColumns
+            && sc.declaredCols <= actualMaxCols + 64) {
+            nCols = sc.declaredCols;
+        }
         if (nCols <= 0)
             continue;
+        const int nRows = sc.rows.size();
+        if (cols.size() + nCols > g_maxImportColumns
+            || totalAllocatedCells + qint64(nCols) * qint64(nRows) > g_maxImportCells) {
+            qDeleteAll(cols);
+            g_lastImportReport.refusal =
+                    QObject::tr("Import exceeds maximum allowed size (%1 columns / %2 cells).")
+                            .arg(g_maxImportColumns)
+                            .arg(g_maxImportCells);
+            return nullptr;
+        }
+        totalAllocatedCells += qint64(nCols) * qint64(nRows);
         const QStringList labels =
                 firstRowNamesColumns ? splitSpecLabels(sc.labelBody, nCols) : QStringList();
-        const int nRows = sc.rows.size();
         maxDataRows = std::max(maxDataRows, nRows);
         const QString scanSuffix = (nonEmptyScans.size() > 1)
                 ? QStringLiteral("_S%1").arg(
@@ -2143,6 +2200,16 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             if (nRows == 0 && blockIdx > 0)
                 continue;
             rasCols = std::max(2, rasCols);
+            if (cols.size() + rasCols > g_maxImportColumns
+                || qint64(cols.size() + rasCols) * qint64(std::max(totalRows, nRows))
+                        > g_maxImportCells) {
+                qDeleteAll(cols);
+                g_lastImportReport.refusal =
+                        QObject::tr("Import exceeds maximum allowed size (%1 columns / %2 cells).")
+                                .arg(g_maxImportColumns)
+                                .arg(g_maxImportCells);
+                return nullptr;
+            }
             maxBlockCols = std::max(maxBlockCols, rasCols);
             totalRows = std::max(totalRows, nRows);
             const QString suffix =
@@ -2215,11 +2282,15 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                     tryParseVaspTextInternal(decoded, effTableName, filePathHint, nullptr)) {
             return vaspTbl;
         }
+        if (!g_lastImportReport.refusal.isEmpty())
+            return nullptr;
         // 1c. Synchrotron SPEC (#F / #S / #N / #L) parser
         if (future::Table *specTbl = tryParseSpecTextInternal(
                     decoded, effTableName, convertToNumeric, numericLocale, firstRowNamesColumns)) {
             return specTbl;
         }
+        if (!g_lastImportReport.refusal.isEmpty())
+            return nullptr;
     }
 
     // 2. Advance past explicit ignoredLines
@@ -2296,32 +2367,121 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 || (autoFixTabOnCsv && normHintSep == QLatin1String("\t"));
         if (convertToNumeric && sepAllowsSemicolon
             && effectiveLocale.decimalPoint() == QLatin1Char('.')) {
+            auto looksLikeNonSemiNumericLine = [](const QString &ln) -> bool {
+                if (countUnquotedChar(ln, QLatin1Char(';')) > 0)
+                    return false;
+                QChar delim = QLatin1Char('\0');
+                if (countUnquotedChar(ln, QLatin1Char('\t')) > 0)
+                    delim = QLatin1Char('\t');
+                else if (countUnquotedChar(ln, QLatin1Char(',')) > 0)
+                    delim = QLatin1Char(',');
+                else
+                    return false;
+                QVector<bool> qFlags;
+                const QStringList parts = splitUnquotedSimple(ln, delim, &qFlags);
+                int numToks = 0;
+                for (int i = 0; i < parts.size(); ++i) {
+                    if (qFlags.value(i))
+                        continue;
+                    const QString tok = parts[i].trimmed();
+                    if (tok.isEmpty())
+                        continue;
+                    double dv = 0.0;
+                    if (tryParseAsciiDoubleSpan(tok.constData(), tok.size(), dv, false))
+                        ++numToks;
+                }
+                return numToks >= 2;
+            };
+
+            auto advanceLinePos = [&](int e) {
+                int p = e;
+                if (p < len && buf[p] == QLatin1Char('\r')) {
+                    ++p;
+                    if (p < len && buf[p] == QLatin1Char('\n'))
+                        ++p;
+                } else if (p < len && buf[p] == QLatin1Char('\n')) {
+                    ++p;
+                }
+                return p;
+            };
+
             QStringList preLines;
             QStringList preHashFallback;
             int pScan = pos;
-            while (pScan < len && preLines.size() < 24) {
+            int nonEmptyScanned = 0;
+            while (pScan < len && preLines.size() < 24 && nonEmptyScanned < 4096) {
                 const int e = scanLogicalLineEnd(pScan);
                 const QString ln = QString(buf + pScan, e - pScan).trimmed();
                 if (!ln.isEmpty()) {
-                    if (!ln.startsWith(QLatin1Char('#')))
+                    ++nonEmptyScanned;
+                    if (!ln.startsWith(QLatin1Char('#'))) {
                         preLines.append(ln);
-                    else if (preHashFallback.size() < 8 && ln.contains(QLatin1Char(';')))
+                    } else if (preHashFallback.size() < 8 && ln.contains(QLatin1Char(';'))) {
                         preHashFallback.append(ln);
+                    }
                 }
-                pScan = e;
-                if (pScan < len && buf[pScan] == QLatin1Char('\r')) {
-                    ++pScan;
-                    if (pScan < len && buf[pScan] == QLatin1Char('\n'))
-                        ++pScan;
-                } else if (pScan < len && buf[pScan] == QLatin1Char('\n')) {
-                    ++pScan;
-                }
+                pScan = advanceLinePos(e);
             }
             if (preLines.isEmpty())
                 preLines = preHashFallback;
+
             if (looksLikeEuropeanSemicolonLines(preLines)) {
                 effectiveLocale = QLocale(QLocale::German);
                 europeanSemicolonDetected = true;
+            } else if (detectPreamble) {
+                int normalDataInPre = 0;
+                for (const QString &pl : preLines) {
+                    if (looksLikeNonSemiNumericLine(pl))
+                        ++normalDataInPre;
+                }
+                if (normalDataInPre < 2) {
+                    // Scan past long metadata preambles (>24 lines) looking for a contiguous
+                    // block of semicolon-delimited data lines (never cherry-picking scattered ';').
+                    QStringList curSemiBlock;
+                    // Seed with trailing contiguous ';' lines from preLines (in case data began at line 24)
+                    for (int i = preLines.size() - 1; i >= 0; --i) {
+                        if (countUnquotedChar(preLines[i], QLatin1Char(';')) > 0)
+                            curSemiBlock.prepend(preLines[i]);
+                        else
+                            break;
+                    }
+                    int consecNormalData = 0;
+                    while (pScan < len && nonEmptyScanned < 4096) {
+                        const int e = scanLogicalLineEnd(pScan);
+                        const QString ln = QString(buf + pScan, e - pScan).trimmed();
+                        pScan = advanceLinePos(e);
+                        if (ln.isEmpty())
+                            continue;
+                        ++nonEmptyScanned;
+                        if (ln.startsWith(QLatin1Char('#')))
+                            continue;
+                        if (countUnquotedChar(ln, QLatin1Char(';')) > 0) {
+                            consecNormalData = 0;
+                            curSemiBlock.append(ln);
+                            if (curSemiBlock.size() >= 24)
+                                break;
+                        } else {
+                            if (curSemiBlock.size() >= 2
+                                && looksLikeEuropeanSemicolonLines(curSemiBlock)) {
+                                effectiveLocale = QLocale(QLocale::German);
+                                europeanSemicolonDetected = true;
+                                break;
+                            }
+                            curSemiBlock.clear();
+                            if (looksLikeNonSemiNumericLine(ln)) {
+                                if (++consecNormalData >= 2)
+                                    break;
+                            } else {
+                                consecNormalData = 0;
+                            }
+                        }
+                    }
+                    if (!europeanSemicolonDetected && curSemiBlock.size() >= 2
+                        && looksLikeEuropeanSemicolonLines(curSemiBlock)) {
+                        effectiveLocale = QLocale(QLocale::German);
+                        europeanSemicolonDetected = true;
+                    }
+                }
             }
         }
     }
@@ -3413,6 +3573,8 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     // 4. Parse up to 16 preview rows (zero spike even on 200,000-row CSVs!) for header/unit discovery
     QVector<QVector<LabCsvCell>> previewRecords;
     previewRecords.reserve(16);
+    QVector<bool> previewRowHasRealNumeric;
+    previewRowHasRealNumeric.reserve(16);
     QVector<int> previewLineStartOffsets;
     previewLineStartOffsets.reserve(17);
     QVector<int> previewSkippedCommentOffsets;
@@ -3425,6 +3587,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
 
     auto runPreviewScan = [&](bool pass2AllowAlpha, bool pass1HadNonHashRows) {
         previewRecords.clear();
+        previewRowHasRealNumeric.clear();
         previewLineStartOffsets.clear();
         previewSkippedCommentOffsets.clear();
         scanPos = pos;
@@ -3455,11 +3618,13 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 previewSkippedCommentOffsets.append(rowStartOffset);
                 continue;
             }
-            if (rowHasRealNumericData(rowSpans)) {
+            const bool hasRealNum = rowHasRealNumericData(rowSpans);
+            if (hasRealNum) {
                 seenRealData = true;
                 anyNumericPreviewRow = true;
                 step4SeenData = true;
             }
+            previewRowHasRealNumeric.append(hasRealNum);
             previewLineStartOffsets.append(rowStartOffset);
             QVector<LabCsvCell> rec;
             rec.reserve(rowSpans.size());
@@ -3903,12 +4068,16 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     // Determine exact character offset of first data row and count remaining rows without allocating QStrings
     const int dataStartPos = previewLineStartOffsets[std::min(
             fileHeaderLinesConsumed, previewLineStartOffsets.size() - 1)];
-    const bool allowAlphaAtDataStart = usedAlphaHashPass2
-            || (fileHeaderLinesConsumed < previewRecords.size()
-                && !previewRecords[fileHeaderLinesConsumed].isEmpty()
-                && !previewRecords[fileHeaderLinesConsumed][0].quoted
-                && previewRecords[fileHeaderLinesConsumed][0].value.trimmed().startsWith(
-                        QLatin1Char('#')));
+    bool headerHadRealNumericData = false;
+    const int consumedCheck =
+            std::min(fileHeaderLinesConsumed, int(previewRowHasRealNumeric.size()));
+    for (int pr = 0; pr < consumedCheck; ++pr) {
+        if (previewRowHasRealNumeric[pr]) {
+            headerHadRealNumericData = true;
+            break;
+        }
+    }
+    const bool allowAlphaAtDataStart = usedAlphaHashPass2 || headerHadRealNumericData;
     for (int off : previewSkippedCommentOffsets) {
         if (off < dataStartPos)
             ++skippedNonBlankLines;

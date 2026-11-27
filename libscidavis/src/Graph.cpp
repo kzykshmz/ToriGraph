@@ -214,6 +214,18 @@ Graph::Graph(QWidget *parent, QString name, Qt::WindowFlags f) : QWidget(parent,
     d_active_tool = NULL;
     widthLine = 2;
     selectedMarker = -1;
+    selectedAxis = -1;
+    selectedMarkerType = None;
+    mrklStyle = QwtPlotMarker::NoLine;
+    auxMrkStyle = Qt::SolidLine;
+    auxMrkAngle = 0;
+    auxMrkBkg = 0;
+    auxMrkWidth = 0;
+    auxArrowHeadLength = 4;
+    auxArrowHeadAngle = 45;
+    auxFilledArrowHead = true;
+    startArrowOn = false;
+    endArrowOn = false;
     drawTextOn = false;
     drawLineOn = false;
     drawArrowOn = false;
@@ -601,7 +613,7 @@ void Graph::print()
     printer.setFullPage(true);
 
     // printing should preserve plot aspect ratio, if possible
-    double aspect = double(d_plot->width()) / double(d_plot->height());
+    double aspect = double(d_plot->width()) / double(qMax(1, d_plot->height()));
     if (aspect < 1)
         printer.setPageOrientation(QPageLayout::Portrait);
     else
@@ -729,8 +741,8 @@ void Graph::exportPainter(QPainter &painter, bool keepAspect, QRect rect, QSize 
 
     ScopedExportFlag exportGuard(d_is_exporting);
     painter.save();
-    painter.scale((double)size.width() / (double)rect.width(),
-                  (double)size.height() / (double)rect.height());
+    painter.scale((double)size.width() / (double)qMax(1, rect.width()),
+                  (double)size.height() / (double)qMax(1, rect.height()));
 
     print(&painter, rect);
     painter.restore();
@@ -794,6 +806,8 @@ void Graph::drawCanvasFrame(bool frameOn, int width)
 {
     if (frameOn) {
         d_plot->setLineWidth(width);
+    } else {
+        d_plot->setLineWidth(0);
     }
 }
 
@@ -920,7 +934,9 @@ void Graph::createTable(const QwtPlotCurve *curve)
 
 void Graph::showIntensityTable()
 {
-    ImageMarker *mrk = (ImageMarker *)d_plot->marker(selectedMarker);
+    if (!d_images.contains(selectedMarker))
+        return;
+    ImageMarker *mrk = dynamic_cast<ImageMarker *>(d_plot->marker(selectedMarker));
     if (!mrk)
         return;
 
@@ -1092,6 +1108,8 @@ void Graph::copyTitle()
 
 void Graph::removeAxisTitle()
 {
+    if (selectedAxis < 0 || selectedAxis >= QwtPlot::axisCnt)
+        return;
     int axis = (selectedAxis + 2) % 4; // inconsistent notation in Qwt enumerations between
     // QwtScaleDraw::alignment and QwtPlot::Axis
     if (axis < 0 || axis >= QwtPlot::axisCnt)
@@ -1119,6 +1137,8 @@ void Graph::cutAxisTitle()
 
 void Graph::copyAxisTitle()
 {
+    if (selectedAxis < 0 || selectedAxis >= QwtPlot::axisCnt)
+        return;
     int axis = (selectedAxis + 2) % 4; // unconsistent notation in Qwt enumerations between
     // QwtScaleDraw::alignment and QwtPlot::Axis
     QApplication::clipboard()->setText(axisTitle(axis), QClipboard::Clipboard);
@@ -1303,21 +1323,29 @@ void Graph::showAxisContextMenu(int axis)
 
 void Graph::showAxisDialog()
 {
+    if (selectedAxis < 0 || selectedAxis >= QwtPlot::axisCnt)
+        return;
     emit showAxisDialog(selectedAxis);
 }
 
 void Graph::showScaleDialog()
 {
+    if (selectedAxis < 0 || selectedAxis >= QwtPlot::axisCnt)
+        return;
     emit axisDblClicked(selectedAxis);
 }
 
 void Graph::hideSelectedAxis()
 {
+    if (selectedAxis < 0 || selectedAxis >= QwtPlot::axisCnt)
+        return;
     int axis = -1;
     if (selectedAxis == QwtScaleDraw::LeftScale || selectedAxis == QwtScaleDraw::RightScale)
         axis = selectedAxis - 2;
     else
         axis = selectedAxis + 2;
+    if (axis < 0 || axis >= QwtPlot::axisCnt)
+        return;
 
     MultiLayer *ml = multiLayerParent();
     const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
@@ -1332,6 +1360,8 @@ void Graph::hideSelectedAxis()
 
 void Graph::showGrids()
 {
+    if (selectedAxis < 0 || selectedAxis >= QwtPlot::axisCnt)
+        return;
     MultiLayer *ml = multiLayerParent();
     const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
     showGrid(selectedAxis);

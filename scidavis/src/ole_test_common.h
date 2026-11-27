@@ -694,5 +694,6 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw);
 int runSuite112HeatmapHolesAndHistogramBins(ApplicationWindow *mw);
 int runSuite113SwarmAuditRegressions(ApplicationWindow *mw);
 int runSuite114DeepSwarmAuditRegressions(ApplicationWindow *mw);
+int runSuite115Campaign2SwarmAuditRegressions(ApplicationWindow *mw);
 
 #endif // TORIGRAPH_OLE_TEST_COMMON_H

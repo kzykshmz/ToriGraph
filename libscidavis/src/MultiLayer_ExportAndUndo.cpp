@@ -68,6 +68,8 @@
 #include <QThread>
 #include <QUuid>
 #include <QVBoxLayout>
+#include <QXmlStreamReader>
+#include <QXmlStreamWriter>
 #include <algorithm>
 #include <limits>
 
@@ -935,7 +937,7 @@ void MultiLayer::print()
     printer.setColorMode(QPrinter::Color);
     printer.setFullPage(true);
     QRect canvasRect = canvas->rect();
-    double aspect = double(canvasRect.width()) / double(canvasRect.height());
+    double aspect = double(canvasRect.width()) / double(qMax(1, canvasRect.height()));
     if (aspect < 1)
         printer.setPageOrientation(QPageLayout::Portrait);
     else
@@ -1354,7 +1356,7 @@ class MultiLayerSnapshotUndoCommand : public QUndoCommand
 public:
     MultiLayerSnapshotUndoCommand(MultiLayer *ml, ApplicationWindow *app, const QString &label,
                                   const QString &beforeSnap, const QString &afterSnap,
-                                  int activeLayerIdx, int mergeId,
+                                  int beforeLayerIdx, int afterLayerIdx, int mergeId,
                                   const QVector<MultiLayer::LayerIdentity> &beforeIds,
                                   const QVector<MultiLayer::LayerIdentity> &afterIds)
         : QUndoCommand(label),
@@ -1364,8 +1366,8 @@ public:
           d_after(afterSnap),
           d_before_ids(beforeIds),
           d_after_ids(afterIds),
-          d_before_layer(activeLayerIdx),
-          d_after_layer(activeLayerIdx),
+          d_before_layer(beforeLayerIdx),
+          d_after_layer(afterLayerIdx),
           d_merge_id(mergeId),
           d_timestamp_ms(QDateTime::currentMSecsSinceEpoch()),
           d_initial_push_done(false)
@@ -1537,11 +1539,19 @@ void MultiLayer::pushUndoSnapshot(const QString &label, const QString &beforeSna
         return;
 
     const int activeIdx = active_graph ? graphsList.indexOf(active_graph) : 0;
+    int beforeActiveIdx = -1;
+    {
+        static const QRegularExpression activeLayerRx(
+                QStringLiteral("<ToriActiveLayer\\s+index=\"(\\d+)\""));
+        const QRegularExpressionMatch m = activeLayerRx.match(beforeSnapshot);
+        if (m.hasMatch())
+            beforeActiveIdx = m.captured(1).toInt();
+    }
     ApplicationWindow *app = findMultiLayerApp(this);
     const QVector<LayerIdentity> *beforeIds = capturedLayerIdentities(beforeSnapshot);
     d_undo_stack->push(new MultiLayerSnapshotUndoCommand(
-            this, app, label, beforeSnapshot, afterSnapshot, qMax(0, activeIdx), mergeId,
-            beforeIds ? *beforeIds : QVector<LayerIdentity>(), layerIdentities()));
+            this, app, label, beforeSnapshot, afterSnapshot, beforeActiveIdx, qMax(0, activeIdx),
+            mergeId, beforeIds ? *beforeIds : QVector<LayerIdentity>(), layerIdentities()));
     if (app)
         app->updateUndoRedoActionsForActiveWindow();
 }
@@ -2042,7 +2052,8 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
                    || trimmed.startsWith(QLatin1String("<ToriPointColorMap"))
                    || trimmed.startsWith(QLatin1String("<ToriDensity2D"))
                    || trimmed.startsWith(QLatin1String("<ToriPoleFigure"))
-                   || trimmed.startsWith(QLatin1String("<ToriBackbones"))) {
+                   || trimmed.startsWith(QLatin1String("<ToriBackbones"))
+                   || trimmed.startsWith(QLatin1String("<ToriRecalcLinks"))) {
             QVector<XmlAttrSpan> spans = parseSnapshotXmlAttrs(line);
             if (!spans.isEmpty()) {
                 auto attrValue = [&](const QLatin1String &key) -> QString {
@@ -2180,6 +2191,71 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
                         }
                         if (cwChanged)
                             newVals[si] = entries.join(QLatin1Char(';'));
+                    }
+                } else if (trimmed.startsWith(QLatin1String("<ToriRecalcLinks"))
+                           && kind != SnapshotRenameKind::MatrixRename) {
+                    for (int si = 0; si < spans.size(); ++si) {
+                        if (spans[si].name != QLatin1String("xml"))
+                            continue;
+                        const QString &innerXml = spans[si].value;
+                        if (innerXml.trimmed().isEmpty())
+                            continue;
+                        QString rewritten;
+                        QXmlStreamReader xr(innerXml);
+                        QXmlStreamWriter xw(&rewritten);
+                        bool innerChanged = false;
+                        bool parseFailed = false;
+                        while (!xr.atEnd()) {
+                            const auto tok = xr.readNext();
+                            if (xr.hasError()) {
+                                parseFailed = true;
+                                break;
+                            }
+                            if (tok == QXmlStreamReader::StartElement) {
+                                const QString tag = xr.name().toString();
+                                xw.writeStartElement(tag);
+                                const QXmlStreamAttributes attrs = xr.attributes();
+                                for (const QXmlStreamAttribute &at : attrs) {
+                                    const QString an = at.name().toString();
+                                    QString av = at.value().toString();
+                                    if (tag == QLatin1String("Link")) {
+                                        if (kind == SnapshotRenameKind::TableRename
+                                            && (an == QLatin1String("srcTable")
+                                                || an == QLatin1String("resultTable"))) {
+                                            if (av == oldName) {
+                                                av = newName;
+                                                innerChanged = true;
+                                            }
+                                        } else if (an == QLatin1String("srcCurve")
+                                                   || an == QLatin1String("outCurve")
+                                                   || an == QLatin1String("desiredOut")) {
+                                            const QString nv = remapFullColRef(
+                                                    av, kind, oldName, newName, tableCols);
+                                            if (nv != av) {
+                                                av = nv;
+                                                innerChanged = true;
+                                            }
+                                        }
+                                    }
+                                    xw.writeAttribute(an, av);
+                                }
+                                if (tag == QLatin1String("Extra")) {
+                                    const QString origTxt = xr.readElementText();
+                                    const QString nv = remapFullColRef(
+                                            origTxt, kind, oldName, newName, tableCols);
+                                    if (nv != origTxt)
+                                        innerChanged = true;
+                                    xw.writeCharacters(nv);
+                                    xw.writeEndElement();
+                                }
+                            } else if (tok == QXmlStreamReader::EndElement) {
+                                xw.writeEndElement();
+                            } else if (tok == QXmlStreamReader::Characters) {
+                                xw.writeCharacters(xr.text().toString());
+                            }
+                        }
+                        if (!parseFailed && !xr.hasError() && innerChanged)
+                            newVals[si] = rewritten;
                     }
                 }
 
@@ -2350,20 +2426,29 @@ bool MultiLayer::restoreSnapshotInPlace(ApplicationWindow *app, const QString &s
               app(a),
               prevFileVersion(a->d_file_version),
               prevRenamedTables(a->renamedTables),
-              prevAutoscale2D(a->autoscale2DPlots)
+              prevAutoscale2D(a->autoscale2DPlots),
+              active(true)
         {
             ml->d_is_restoring_snapshot = true;
             app->d_file_version = SciDAVis::version();
             app->renamedTables.clear();
             app->autoscale2DPlots = false;
         }
-        ~SnapshotRestoreGuard()
+        void release()
         {
+            if (!active)
+                return;
+            active = false;
             app->d_file_version = prevFileVersion;
             app->renamedTables = prevRenamedTables;
             app->autoscale2DPlots = prevAutoscale2D;
             ml->d_is_restoring_snapshot = false;
         }
+        ~SnapshotRestoreGuard()
+        {
+            release();
+        }
+        bool active;
     } guard(this, app);
     // The layers are replaced below. They stand for the layers the snapshot was taken of; else
     // for the layers now (when there are as many).
@@ -2459,6 +2544,8 @@ bool MultiLayer::restoreSnapshotInPlace(ApplicationWindow *app, const QString &s
     colsSpace = 5;
     l_canvas_width = 360;
     l_canvas_height = 360;
+    d_zoom_base_lcanvas = QSize();
+    d_zoom_applied_lcanvas = QSize();
     hor_align = HCenter;
     vert_align = VCenter;
     d_page_unit = UnitPx;
@@ -2662,11 +2749,13 @@ bool MultiLayer::restoreSnapshotInPlace(ApplicationWindow *app, const QString &s
     finalizePhase5Restore();
 
     if (!graphsList.isEmpty()) {
-        const int idx = (preferredActiveLayer >= 0 && preferredActiveLayer < graphsList.count())
-                ? preferredActiveLayer
-                : 0;
-        if (Graph *ag = qobject_cast<Graph *>(graphsList.at(idx)))
-            setActiveGraph(ag);
+        if (preferredActiveLayer >= 0 && preferredActiveLayer < graphsList.count()) {
+            if (Graph *ag = qobject_cast<Graph *>(graphsList.at(preferredActiveLayer)))
+                setActiveGraph(ag);
+        } else if (!active_graph || !graphsList.contains(active_graph)) {
+            if (Graph *ag = qobject_cast<Graph *>(graphsList.at(0)))
+                setActiveGraph(ag);
+        }
     }
 
     for (int k = 0; k < graphsList.count(); ++k) {
@@ -2685,13 +2774,14 @@ bool MultiLayer::restoreSnapshotInPlace(ApplicationWindow *app, const QString &s
 
     repositionCanvasStatusPill();
     updateCanvasStatusPill();
-    notifyOleDirtyIfEmbedded();
 
     if (GraphInspectorDock *dock = app->graphInspectorDock())
         dock->setTargetMultiLayer(this, true);
 
     app->modifiedProject();
     app->updateUndoRedoActionsForActiveWindow();
+    guard.release();
+    notifyOleDirtyIfEmbedded();
     return true;
 }
 

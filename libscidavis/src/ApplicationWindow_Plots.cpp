@@ -528,7 +528,14 @@ void ApplicationWindow::plotDoubleY()
     if (!ml)
         return;
     Graph *g = ml->activeGraph();
-    if (!g || g->curves() < 2) {
+    QList<int> nonErrorIndices;
+    if (g) {
+        for (int i = 0; i < g->curves(); ++i) {
+            if (g->curveType(i) != Graph::ErrorBars && g->curve(i) != nullptr)
+                nonErrorIndices.append(i);
+        }
+    }
+    if (!g || nonErrorIndices.size() < 2) {
         showUxHint(tr("Double-Y plot needs at least two curves on the graph. Add another Y "
                       "column to this graph first, or select two Y columns in a worksheet."));
         return;
@@ -541,12 +548,12 @@ void ApplicationWindow::plotDoubleY()
         }
     }
 
-    // Bind selected curve (if valid and > 0) or curve 1 to Right Y axis
-    int rightCurveIdx = 1;
+    // Bind selected non-error curve (if not the first data curve) or the second non-error curve to Right Y axis
+    int rightCurveIdx = nonErrorIndices[1];
     const QString selCurveTitle = g->selectedCurveTitle();
     if (!selCurveTitle.isNull()) {
         const int selIdx = g->curveIndex(selCurveTitle);
-        if (selIdx > 0 && g->curveType(selIdx) != Graph::ErrorBars)
+        if (selIdx >= 0 && selIdx != nonErrorIndices[0] && g->curveType(selIdx) != Graph::ErrorBars)
             rightCurveIdx = selIdx;
     }
     QwtPlotCurve *rightCurve = g->curve(rightCurveIdx);
@@ -558,6 +565,12 @@ void ApplicationWindow::plotDoubleY()
     const QPoint legendPxBefore = g->legend() ? g->legend()->rect().topLeft() : QPoint();
 
     rightCurve->setYAxis(QwtPlot::yRight);
+    if (auto *rightDc = dynamic_cast<DataCurve *>(rightCurve)) {
+        for (DataCurve *eb : rightDc->errorBarsList()) {
+            if (eb)
+                eb->setYAxis(QwtPlot::yRight);
+        }
+    }
     g->enableAxis(QwtPlot::yRight, true);
     g->setAxisBackboneVisible(QwtPlot::yRight, true);
     {
@@ -1243,7 +1256,7 @@ void ApplicationWindow::change3DMatrix()
     ad->setWindowTitle(tr("Choose matrix to plot"));
     ad->setCurveNames(matrixNames());
 
-    Graph3D *g = (Graph3D *)d_workspace.activeSubWindow();
+    Graph3D *g = qobject_cast<Graph3D *>(d_workspace.activeSubWindow());
     if (g && g->matrix())
         ad->setCurentDataSet(g->matrix()->name());
     ad->exec();
@@ -2241,7 +2254,7 @@ void ApplicationWindow::setPreferences(Graph *g)
             g->setAxisUnitFormat(Column::UnitFormat::ISIJSlash);
         } else if (s.unitFormat == 2) {
             g->setProperty("_toriBracketUnitFmt", true);
-            g->setAxisUnitFormat(Column::UnitFormat::Paren);
+            g->setAxisUnitFormat(Column::UnitFormat::Bracket);
         } else {
             g->setProperty("_toriBracketUnitFmt", false);
             g->setAxisUnitFormat(Column::UnitFormat::Paren);
@@ -3670,13 +3683,17 @@ void ApplicationWindow::removePoints()
         btnPointer->setChecked(true);
         return;
     } else {
+        QPointer<Graph> safeG(g);
         switch (QMessageBox::warning(this, tr("ToriGraph"),
                                      tr("This will modify the data in the worksheets!\nAre you "
                                         "sure you want to continue?"),
                                      tr("Continue"), tr("Cancel"), 0, 1)) {
         case 0:
-            g->setActiveTool(new DataPickerTool(g, this, DataPickerTool::Remove, d_status_info,
-                                                SLOT(setText(const QString &))));
+            if (safeG) {
+                safeG->setActiveTool(new DataPickerTool(safeG.data(), this, DataPickerTool::Remove,
+                                                        d_status_info,
+                                                        SLOT(setText(const QString &))));
+            }
             break;
 
         case 1:
@@ -3715,14 +3732,16 @@ void ApplicationWindow::movePoints()
         btnPointer->setChecked(true);
         return;
     } else {
+        QPointer<Graph> safeG(g);
         switch (QMessageBox::warning(this, tr("ToriGraph"),
                                      tr("This will modify the data in the worksheets!\nAre you "
                                         "sure you want to continue?"),
                                      tr("Continue"), tr("Cancel"), 0, 1)) {
         case 0:
-            if (g) {
-                g->setActiveTool(new DataPickerTool(g, this, DataPickerTool::Move, d_status_info,
-                                                    SLOT(setText(const QString &))));
+            if (safeG) {
+                safeG->setActiveTool(new DataPickerTool(safeG.data(), this, DataPickerTool::Move,
+                                                        d_status_info,
+                                                        SLOT(setText(const QString &))));
             }
             break;
 
@@ -3883,7 +3902,6 @@ void ApplicationWindow::addTimeStamp()
 void ApplicationWindow::disableAddText()
 {
     actionAddText->setChecked(false);
-    showTextDialog();
 }
 
 void ApplicationWindow::addText()
@@ -3938,6 +3956,8 @@ void ApplicationWindow::addImage()
     if (!g)
         return;
 
+    QPointer<MultiLayer> safePlot(plot);
+    QPointer<Graph> safeG(g);
     QList<QByteArray> list = QImageReader::supportedImageFormats();
     QString filter = tr("Images") + " (", aux1, aux2;
     for (int i = 0; i < (int)list.count(); i++) {
@@ -3949,14 +3969,14 @@ void ApplicationWindow::addImage()
 
     QString fn =
             QFileDialog::getOpenFileName(this, tr("Insert image from file"), imagesDirPath, filter);
-    if (!fn.isEmpty()) {
+    if (!fn.isEmpty() && safePlot && safeG) {
         QFileInfo fi(fn);
         imagesDirPath = fi.absolutePath();
 
         QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
-        const QString before = plot->captureUndoSnapshot();
-        g->addImage(fn);
-        plot->pushUndoSnapshot(tr("Add Image"), before);
+        const QString before = safePlot->captureUndoSnapshot();
+        safeG->addImage(fn);
+        safePlot->pushUndoSnapshot(tr("Add Image"), before);
         QApplication::restoreOverrideCursor();
         emit modified();
     }
@@ -4020,7 +4040,7 @@ void ApplicationWindow::showImageDialog()
     MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
     Graph *g = ml->activeGraph();
     if (g) {
-        ImageMarker *im = (ImageMarker *)g->selectedMarkerPtr();
+        ImageMarker *im = dynamic_cast<ImageMarker *>(g->selectedMarkerPtr());
         if (!im)
             return;
 
@@ -4092,7 +4112,7 @@ void ApplicationWindow::showTextDialog()
     MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
     Graph *g = ml->activeGraph();
     if (g) {
-        Legend *m = (Legend *)g->selectedMarkerPtr();
+        Legend *m = dynamic_cast<Legend *>(g->selectedMarkerPtr());
         if (!m)
             return;
 
@@ -4129,7 +4149,7 @@ void ApplicationWindow::showLineDialog()
     MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
     Graph *g = ml->activeGraph();
     if (g) {
-        ArrowMarker *lm = (ArrowMarker *)g->selectedMarkerPtr();
+        ArrowMarker *lm = dynamic_cast<ArrowMarker *>(g->selectedMarkerPtr());
         if (!lm)
             return;
 
@@ -4565,13 +4585,16 @@ void ApplicationWindow::intensityTable()
 
 void ApplicationWindow::autoArrangeLayers()
 {
-    if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
+    MultiLayer *plot = qobject_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    if (!plot)
         return;
 
-    MultiLayer *plot = (MultiLayer *)d_workspace.activeSubWindow();
+    const QString before = plot->captureUndoSnapshot();
     plot->setMargins(5, 5, 5, 5);
     plot->setSpacing(5, 5);
     plot->arrangeLayers(true, false);
+    plot->pushUndoSnapshot(tr("Arrange Layers"), before);
+    emit modified();
 }
 
 void ApplicationWindow::addLayer()
@@ -4621,15 +4644,21 @@ void ApplicationWindow::addLayer()
 
 void ApplicationWindow::deleteLayer()
 {
-    if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
+    QPointer<MultiLayer> ml = qobject_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    if (!ml)
         return;
 
-    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    const int beforeLayers = ml->layers();
+    const QString before = ml->captureUndoSnapshot();
     if (isNonInteractiveContext(this)) {
         ml->removeLayer();
-        return;
+    } else {
+        ml->confirmRemoveLayer();
     }
-    ml->confirmRemoveLayer();
+    if (ml && ml->layers() != beforeLayers) {
+        ml->pushUndoSnapshot(tr("Remove Layer"), before);
+        emit modified();
+    }
 }
 
 void ApplicationWindow::pickPointerCursor()
@@ -5189,19 +5218,19 @@ void ApplicationWindow::showStackOffsetsDialog()
 {
     if (isNonInteractiveContext(this))
         return;
-    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
-    if (!g || !g->plotWidget())
+    QPointer<Graph> safeG = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!safeG || !safeG->plotWidget())
         return;
-    MultiLayer *ml = g->multiLayerParent();
-    const QString beforeUndoSnap = ml ? ml->captureUndoSnapshot() : QString();
+    QPointer<MultiLayer> safeMl = safeG->multiLayerParent();
+    const QString beforeUndoSnap = safeMl ? safeMl->captureUndoSnapshot() : QString();
 
     QList<PlotCurve *> targetCurves;
-    for (int i = 0; i < g->curves(); ++i) {
-        const int ct = g->curveType(i);
+    for (int i = 0; i < safeG->curves(); ++i) {
+        const int ct = safeG->curveType(i);
         if (ct == Graph::ErrorBars || ct == Graph::Pie || ct == Graph::Box
             || ct == Graph::ColorMap || ct == Graph::GrayMap || ct == Graph::ContourMap)
             continue;
-        PlotCurve *pc = dynamic_cast<PlotCurve *>(g->curve(i));
+        PlotCurve *pc = dynamic_cast<PlotCurve *>(safeG->curve(i));
         if (pc && pc->isVisible() && pc->dataSize() > 0)
             targetCurves.append(pc);
     }
@@ -5230,7 +5259,7 @@ void ApplicationWindow::showStackOffsetsDialog()
         initialCurves.push_back(snap);
     }
 
-    Plot *plt = g->plotWidget();
+    Plot *initPlt = safeG->plotWidget();
     struct AxisScaleSnapshot
     {
         bool autoScale = true;
@@ -5239,20 +5268,20 @@ void ApplicationWindow::showStackOffsetsDialog()
     };
     AxisScaleSnapshot initialAxes[QwtPlot::axisCnt];
     for (int a = 0; a < QwtPlot::axisCnt; ++a) {
-        initialAxes[a].autoScale = plt->axisAutoScale(a);
-        const QwtScaleDiv *sd = plt->axisScaleDiv(a);
+        initialAxes[a].autoScale = initPlt->axisAutoScale(a);
+        const QwtScaleDiv *sd = initPlt->axisScaleDiv(a);
         if (sd) {
             initialAxes[a].lo = sd->lowerBound();
             initialAxes[a].hi = sd->upperBound();
         }
     }
 
-    const QVariant origPropMode = g->property("stackOffsetMode");
-    const QVariant origPropYPct = g->property("yStackOffsetPercent");
-    const QVariant origPropXPct = g->property("xStackOffsetPercent");
-    const QVariant origPropNorm = g->property("normalizeStackZeroOne");
-    const QVariant origPropAuto = g->property("stackAutoscale");
-    const QVariant origPropRev = g->property("stackReverseOrder");
+    const QVariant origPropMode = safeG->property("stackOffsetMode");
+    const QVariant origPropYPct = safeG->property("yStackOffsetPercent");
+    const QVariant origPropXPct = safeG->property("xStackOffsetPercent");
+    const QVariant origPropNorm = safeG->property("normalizeStackZeroOne");
+    const QVariant origPropAuto = safeG->property("stackAutoscale");
+    const QVariant origPropRev = safeG->property("stackReverseOrder");
 
     // Reconstruct active Graph's current stack state on open
     int initMode = 0;
@@ -5328,8 +5357,25 @@ void ApplicationWindow::showStackOffsetsDialog()
         }
     };
 
+    auto liveCurvesSet = [&]() {
+        QSet<PlotCurve *> live;
+        if (!safeG)
+            return live;
+        for (int i = 0; i < safeG->curves(); ++i) {
+            if (PlotCurve *pc = dynamic_cast<PlotCurve *>(safeG->curve(i)))
+                live.insert(pc);
+        }
+        return live;
+    };
+
     auto restoreInitialSnapshot = [&]() {
+        if (!safeG || !safeG->plotWidget())
+            return;
+        Plot *plt = safeG->plotWidget();
+        const QSet<PlotCurve *> live = liveCurvesSet();
         for (const CurveStackSnapshot &snap : initialCurves) {
+            if (!live.contains(snap.pc))
+                continue;
             snap.pc->setStackNormalize01(snap.norm01);
             snap.pc->setStackOffset(snap.dx, snap.dy);
             syncCurveErrorBars(snap.pc);
@@ -5340,18 +5386,28 @@ void ApplicationWindow::showStackOffsetsDialog()
             else
                 plt->setAxisScale(a, initialAxes[a].lo, initialAxes[a].hi);
         }
-        g->setProperty("stackOffsetMode", origPropMode);
-        g->setProperty("yStackOffsetPercent", origPropYPct);
-        g->setProperty("xStackOffsetPercent", origPropXPct);
-        g->setProperty("normalizeStackZeroOne", origPropNorm);
-        g->setProperty("stackAutoscale", origPropAuto);
-        g->setProperty("stackReverseOrder", origPropRev);
-        g->updatePlot();
+        safeG->setProperty("stackOffsetMode", origPropMode);
+        safeG->setProperty("yStackOffsetPercent", origPropYPct);
+        safeG->setProperty("xStackOffsetPercent", origPropXPct);
+        safeG->setProperty("normalizeStackZeroOne", origPropNorm);
+        safeG->setProperty("stackAutoscale", origPropAuto);
+        safeG->setProperty("stackReverseOrder", origPropRev);
+        safeG->updatePlot();
     };
 
     auto applyStackToGraph = [&](int mode, double yPct, double xPct, bool norm01,
                                  bool autoRescale, bool revOrder) {
-        QList<PlotCurve *> ordered = targetCurves;
+        if (!safeG || !safeG->plotWidget())
+            return;
+        Plot *plt = safeG->plotWidget();
+        const QSet<PlotCurve *> live = liveCurvesSet();
+        QList<PlotCurve *> ordered;
+        for (PlotCurve *pc : targetCurves) {
+            if (live.contains(pc))
+                ordered.append(pc);
+        }
+        if (ordered.isEmpty())
+            return;
         if (revOrder)
             std::reverse(ordered.begin(), ordered.end());
 
@@ -5431,7 +5487,7 @@ void ApplicationWindow::showStackOffsetsDialog()
                     plt->setAxisScale(a, initialAxes[a].lo, initialAxes[a].hi);
             }
         }
-        g->updatePlot();
+        safeG->updatePlot();
     };
 
     QDialog dlg(this);
@@ -5585,6 +5641,8 @@ void ApplicationWindow::showStackOffsetsDialog()
     QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
     if (dlg.exec() == QDialog::Accepted) {
+        if (!safeG || !safeG->plotWidget())
+            return;
         const int finalMode = modeCombo->currentData().toInt();
         const double finalY = ySpin->value();
         const double finalX = xSpin->value();
@@ -5593,15 +5651,15 @@ void ApplicationWindow::showStackOffsetsDialog()
         const bool finalRev = revOrderCheck->isChecked();
 
         applyStackToGraph(finalMode, finalY, finalX, finalNorm, finalAuto, finalRev);
-        g->setProperty("stackOffsetMode", finalMode);
-        g->setProperty("yStackOffsetPercent", finalY);
-        g->setProperty("xStackOffsetPercent", finalX);
-        g->setProperty("normalizeStackZeroOne", finalNorm);
-        g->setProperty("stackAutoscale", finalAuto);
-        g->setProperty("stackReverseOrder", finalRev);
-        emit g->modifiedGraph();
-        if (ml)
-            ml->pushUndoSnapshot(tr("Waterfall / Y-Offset Stack"), beforeUndoSnap);
+        safeG->setProperty("stackOffsetMode", finalMode);
+        safeG->setProperty("yStackOffsetPercent", finalY);
+        safeG->setProperty("xStackOffsetPercent", finalX);
+        safeG->setProperty("normalizeStackZeroOne", finalNorm);
+        safeG->setProperty("stackAutoscale", finalAuto);
+        safeG->setProperty("stackReverseOrder", finalRev);
+        emit safeG->modifiedGraph();
+        if (safeMl)
+            safeMl->pushUndoSnapshot(tr("Waterfall / Y-Offset Stack"), beforeUndoSnap);
         emit modified();
     } else {
         restoreInitialSnapshot();
@@ -6189,50 +6247,50 @@ void ApplicationWindow::plotStackedBars()
 
 void ApplicationWindow::plotPolarData()
 {
-    Table *t = qobject_cast<Table *>(d_workspace.activeSubWindow());
-    if (!t) {
+    QPointer<Table> safeT = qobject_cast<Table *>(d_workspace.activeSubWindow());
+    if (!safeT) {
         for (MyWidget *w : (current_folder ? current_folder->windowsList() : windowsList())) {
             if (Table *cand = qobject_cast<Table *>(w)) {
-                t = cand;
+                safeT = cand;
                 break;
             }
         }
     }
-    if (!t || t->numCols() < 2 || t->numRows() < 1) {
+    if (!safeT || safeT->numCols() < 2 || safeT->numRows() < 1) {
         showUxHint(tr("Polar plot requires a worksheet with at least one angle column and one radius column."));
         return;
     }
 
-    int thetaCol = t->firstXCol();
-    if (thetaCol < 0 || thetaCol >= t->numCols())
+    int thetaCol = safeT->firstXCol();
+    if (thetaCol < 0 || thetaCol >= safeT->numCols())
         thetaCol = 0;
 
-    QStringList selY = t->selectedYColumns();
+    QStringList selY = safeT->selectedYColumns();
     if (selY.isEmpty())
-        selY = t->YColumns();
+        selY = safeT->YColumns();
     if (selY.isEmpty()) {
-        for (int c = 0; c < t->numCols(); ++c) {
+        for (int c = 0; c < safeT->numCols(); ++c) {
             if (c != thetaCol)
-                selY << t->colName(c);
+                selY << safeT->colName(c);
         }
     }
     if (selY.isEmpty()) {
-        showUxHint(tr("No numeric radius columns were found in '%1'.").arg(t->name()));
+        showUxHint(tr("No numeric radius columns were found in '%1'.").arg(safeT->name()));
         return;
     }
 
     bool inRadians = false;
     QList<int> radiusCols;
-    if (!isNonInteractiveContext(this) && t->numCols() >= 2) {
+    if (!isNonInteractiveContext(this) && safeT->numCols() >= 2) {
         QDialog dlg(this);
         dlg.setWindowTitle(tr("Polar Plot"));
         dlg.setMinimumWidth(380);
         QVBoxLayout *vbox = new QVBoxLayout(&dlg);
         QFormLayout *form = new QFormLayout();
         QComboBox *cbTheta = new QComboBox(&dlg);
-        for (int c = 0; c < t->numCols(); ++c)
-            cbTheta->addItem(t->colLabel(c), c);
-        cbTheta->setCurrentIndex(qBound(0, thetaCol, t->numCols() - 1));
+        for (int c = 0; c < safeT->numCols(); ++c)
+            cbTheta->addItem(safeT->colLabel(c), c);
+        cbTheta->setCurrentIndex(qBound(0, thetaCol, safeT->numCols() - 1));
         QComboBox *cbUnits = new QComboBox(&dlg);
         cbUnits->addItem(tr("Degrees (0–360°)"), false);
         cbUnits->addItem(tr("Radians (0–2π)"), true);
@@ -6242,11 +6300,11 @@ void ApplicationWindow::plotPolarData()
 
         vbox->addWidget(new QLabel(tr("Radius Column(s) (r):"), &dlg));
         QListWidget *rList = new QListWidget(&dlg);
-        for (int c = 0; c < t->numCols(); ++c) {
-            QListWidgetItem *it = new QListWidgetItem(t->colLabel(c), rList);
+        for (int c = 0; c < safeT->numCols(); ++c) {
+            QListWidgetItem *it = new QListWidgetItem(safeT->colLabel(c), rList);
             it->setData(Qt::UserRole, c);
             it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
-            const bool isSelY = selY.contains(t->colName(c));
+            const bool isSelY = selY.contains(safeT->colName(c));
             it->setCheckState((isSelY && c != thetaCol) ? Qt::Checked : Qt::Unchecked);
         }
         if (rList->count() > 0) {
@@ -6265,6 +6323,8 @@ void ApplicationWindow::plotPolarData()
         vbox->addWidget(btns);
         if (dlg.exec() != QDialog::Accepted)
             return;
+        if (!safeT)
+            return;
 
         thetaCol = cbTheta->currentData().toInt();
         inRadians = cbUnits->currentData().toBool();
@@ -6274,11 +6334,21 @@ void ApplicationWindow::plotPolarData()
         }
     } else {
         for (const QString &yn : selY) {
-            const int ci = t->colIndex(yn);
+            const int ci = safeT->colIndex(yn);
             if (ci >= 0)
                 radiusCols << ci;
         }
     }
+
+    if (!safeT || thetaCol < 0 || thetaCol >= safeT->numCols())
+        return;
+
+    QList<int> validRadiusCols;
+    for (int rc : radiusCols) {
+        if (rc >= 0 && rc < safeT->numCols())
+            validRadiusCols << rc;
+    }
+    radiusCols = validRadiusCols;
 
     if (radiusCols.isEmpty()) {
         if (!isNonInteractiveContext(this)) {
@@ -6288,9 +6358,9 @@ void ApplicationWindow::plotPolarData()
         return;
     }
 
-    const int startRow = (t->selectedRowCount(false) >= 2) ? t->firstSelectedRow(false) : 0;
-    const int endRow = (t->selectedRowCount(false) >= 2) ? t->lastSelectedRow(false)
-                                                         : (t->numRows() - 1);
+    const int startRow = (safeT->selectedRowCount(false) >= 2) ? safeT->firstSelectedRow(false) : 0;
+    const int endRow = (safeT->selectedRowCount(false) >= 2) ? safeT->lastSelectedRow(false)
+                                                             : (safeT->numRows() - 1);
 
     MultiLayer *ml = multilayerPlot(generateUniqueName(tr("Polar")));
     if (!ml)
@@ -6302,13 +6372,13 @@ void ApplicationWindow::plotPolarData()
     int plottedSeries = 0;
     for (int rc : radiusCols) {
         QVector<double> thVec, rVec;
-        for (int row = qMax(0, startRow); row <= qMin(endRow, t->numRows() - 1); ++row) {
-            if (t->text(row, thetaCol).trimmed().isEmpty()
-                || t->text(row, rc).trimmed().isEmpty()) {
+        for (int row = qMax(0, startRow); row <= qMin(endRow, safeT->numRows() - 1); ++row) {
+            if (safeT->text(row, thetaCol).trimmed().isEmpty()
+                || safeT->text(row, rc).trimmed().isEmpty()) {
                 continue;
             }
-            const double th = t->cell(row, thetaCol);
-            const double rv = t->cell(row, rc);
+            const double th = safeT->cell(row, thetaCol);
+            const double rv = safeT->cell(row, rc);
             if (std::isfinite(th) && std::isfinite(rv)) {
                 thVec.append(th);
                 rVec.append(rv);
@@ -6316,10 +6386,10 @@ void ApplicationWindow::plotPolarData()
         }
         if (thVec.isEmpty())
             continue;
-        Column *rcObj = t->column(rc);
+        Column *rcObj = safeT->column(rc);
         const QString lbl = (rcObj && !rcObj->longName().trimmed().isEmpty())
                 ? rcObj->formattedAxisTitle()
-                : t->colLabel(rc);
+                : safeT->colLabel(rc);
         ag->setupPolarPlot(thVec, rVec, lbl, inRadians);
         ++plottedSeries;
     }
@@ -6333,7 +6403,7 @@ void ApplicationWindow::plotPolarData()
         }
         return;
     }
-    ToriUx::dismissPlotThisDataBar(t);
+    ToriUx::dismissPlotThisDataBar(safeT);
     if (!ag->hasLegend())
         ag->newLegend();
     ag->placeLegendAnchor(Graph::LegendTopRight);

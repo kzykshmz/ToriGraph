@@ -1220,8 +1220,8 @@ void GraphInspectorDock::updateQuickStartPlotButtonState()
     if (d_app) {
         if (Table *activeTbl = qobject_cast<Table *>(d_app->activeWindow())) {
             canPlot = tableHasPlottableXY(activeTbl);
-        } else if (QList<MyWidget *> *tblList = d_app->tableList()) {
-            for (MyWidget *w : *tblList) {
+        } else {
+            for (MyWidget *w : d_app->windowsList()) {
                 if (!isUsableInspectorTable(d_app, w))
                     continue;
                 if (Table *t = qobject_cast<Table *>(w)) {
