@@ -4,3 +4,4 @@
 [submodule "3rdparty/liborigin"]
 	path = 3rdparty/liborigin
 	url = https://github.com/SciDAVis/liborigin
+	ignore = dirty
