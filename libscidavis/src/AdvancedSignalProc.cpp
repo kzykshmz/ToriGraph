@@ -3712,7 +3712,9 @@ Matrix *AdvancedSignalProc::filterMatrix2D(ApplicationWindow *app, Matrix *srcMa
     case FilterGaussian2D: {
         suffix = QStringLiteral("Gauss2D");
         const double sigma = std::max(0.05, std::isfinite(param) ? param : 1.5);
-        const int autoRad = std::max(1, static_cast<int>(std::ceil(3.0 * sigma)));
+        // Clamp in double before the int conversion (a huge sigma overflowed int: UB); the radius
+        // is limited to 64 below anyway.
+        const int autoRad = std::max(1, static_cast<int>(std::ceil(std::min(3.0 * sigma, 64.0))));
         const int rad = std::clamp((radius > 1) ? std::max(radius, autoRad) : autoRad, 1, 64);
 
         std::vector<double> kw(static_cast<size_t>(2 * rad + 1), 0.0);

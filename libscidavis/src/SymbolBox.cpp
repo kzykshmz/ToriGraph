@@ -170,7 +170,9 @@ int SymbolBox::symbolIndex(const QwtSymbol::Style &style)
 
 QwtSymbol::Style SymbolBox::style(int index)
 {
-    if (index < (int)sizeof(symbols))
+    // sizeof(symbols) is the size in bytes, not the number of entries; a corrupted project
+    // (curve line with symbol index -2147483648 or 40) indexed past the array.
+    if (index >= 0 && static_cast<size_t>(index) < symbolsSize)
         return symbols[index];
     else
         return QwtSymbol::NoSymbol;

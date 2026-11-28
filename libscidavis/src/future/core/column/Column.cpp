@@ -626,23 +626,32 @@ struct Column::RowBuffer
     //! Valid or Invalid
     QVector<char> state;
 
+    //! The largest row index a project file may give a <row> (exclusive). A crafted
+    //! index="2147483647" overflowed row + 1 (writing out of bounds, or looping forever for
+    //! text columns) and index="1000000000" failed with bad_alloc; the same limit caps the row
+    //! count of a table read from a project.
+    static constexpr int kMaxRowIndex = 1 << 26;
+
     //! Makes room for \c row like Private::resizeTo(): rows added are 0 / empty / invalid.
+    //! \c row must be in [0, kMaxRowIndex) (XmlReadRow() checks it).
     void reserveRow(int row, SciDAVis::ColumnDataType type)
     {
+        Q_ASSERT(row >= 0 && row < kMaxRowIndex);
         const int oldSize = state.size();
         if (row < oldSize)
             return;
-        state.resize(row + 1); // new entries are NotRead
+        const qint64 newSize = static_cast<qint64>(row) + 1;
+        state.resize(static_cast<int>(newSize)); // new entries are NotRead
         switch (type) {
         case SciDAVis::TypeDouble:
-            values.resize(row + 1);
+            values.resize(static_cast<int>(newSize));
             break;
         case SciDAVis::TypeQString:
-            for (int i = oldSize; i <= row; ++i)
+            for (qint64 i = oldSize; i < newSize; ++i)
                 texts.append(QString());
             break;
         case SciDAVis::TypeQDateTime:
-            for (int i = oldSize; i <= row; ++i)
+            for (qint64 i = oldSize; i < newSize; ++i)
                 dateTimes.append(QDateTime());
             break;
         }
@@ -901,6 +910,10 @@ bool Column::XmlReadRow(XmlStreamReader *reader, RowBuffer *rows)
     int index = reader->readAttributeInt("index", &ok);
     if (!ok || index < 0) {
         reader->raiseError(tr("invalid or missing row index"));
+        return false;
+    }
+    if (index >= RowBuffer::kMaxRowIndex) {
+        reader->raiseError(tr("row index out of range"));
         return false;
     }
     const bool markedInvalid =

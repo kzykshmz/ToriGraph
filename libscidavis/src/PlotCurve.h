@@ -165,6 +165,19 @@ public:
 
     virtual bool updateData(Table *t, const QString &colName);
     virtual bool loadData();
+
+    //! True when \a col (this curve's X column if \a isXColumn, else its Y column) is a Text /
+    //! DateTime column on an axis that does not show text / time labels (HorizontalBars swap
+    //! the axes), i.e. plotting it would turn the axis into a text / time axis.
+    bool columnShownOffAxis(const Column *col, bool isXColumn) const;
+    //! Keeps the curve in its layer with no points (Graph::updateCurvesData(), when a plotted
+    //! column became Text / DateTime under an axis that does not show it). Deleting the curve
+    //! there was not recorded for Undo, so undoing the column type change did not bring it
+    //! back. DataCurve::loadData() keeps a held curve empty until its columns fit its axes again.
+    void holdEmpty();
+    bool isHeldEmpty() const { return d_held_empty; }
+    void releaseHeldEmpty() { d_held_empty = false; }
+
     QList<QVector<double>> convertData(const QList<Column *> &cols, const QList<int> &axes) const;
 
     //! Returns the row index in the data source table corresponding to the data point index,
@@ -299,6 +312,9 @@ private:
     mutable QVector<int> d_index_to_row;
     mutable QVector<int> d_gap_before_indices;
     QString d_custom_label;
+    bool d_held_empty = false;
+    //! Empty data, row mapping and error bars (see loadData()).
+    void setEmptyData();
     bool validCurveType();
 };
 #endif

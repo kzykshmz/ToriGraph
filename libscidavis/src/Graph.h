@@ -1257,7 +1257,8 @@ signals:
     void showFitResults(const QString &);
 
 private:
-    //! The title/plot association test of removeCurves() for one curve.
+    //! Whether curve \a index reads the column with the full name \a s ("Table_col"): its title,
+    //! X column, an error bar's master X / Y, a vector curve's end columns; exact names only.
     bool curveUsesColumn(int index, const QString &s);
     //! The index of the curve with this key if it is \a item, else -1.
     int curveIndexOfKey(int key, const QwtPlotItem *item) const;
@@ -1380,6 +1381,11 @@ private:
     bool d_axis_title_auto[4] = { true, true, true, true };
     Column::UnitFormat d_axis_unit_format = Column::UnitFormat::Paren;
     bool d_refreshing_auto_titles = false;
+    //! >0 while insertCurvesList() adds many curves: the auto axis titles and updatePlot() are
+    //! worked out once at the end instead of after every curve (each refresh resolves every
+    //! curve's columns by name, so plotting N columns cost O(N^3); 800 columns took minutes).
+    int d_auto_title_refresh_defer = 0;
+    bool d_auto_title_refresh_pending = false;
     mutable QMap<int, QString> d_last_auto_curve_labels;
     GraphSelection d_selection;
     QWidget *d_selection_overlay = nullptr;

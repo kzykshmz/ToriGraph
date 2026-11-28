@@ -202,8 +202,16 @@ void TableStatistics::update(Table *t, const QString &colName)
                 gsl_vector_minmax(y, &min, &max);
 
                 column(2)->setValueAt(destRow, mean);
-                column(3)->setValueAt(destRow, gsl_stats_sd(data, 1, validCells.count()));
-                column(4)->setValueAt(destRow, gsl_stats_variance(data, 1, validCells.count()));
+                // The sample SD / variance need n >= 2 (GSL returns NaN for n = 1): leave the
+                // cells empty instead of writing NaN into the statistics table.
+                if (validCells.count() >= 2) {
+                    column(3)->setValueAt(destRow, gsl_stats_sd(data, 1, validCells.count()));
+                    column(4)->setValueAt(destRow,
+                                          gsl_stats_variance(data, 1, validCells.count()));
+                } else {
+                    column(3)->setInvalid(destRow, true);
+                    column(4)->setInvalid(destRow, true);
+                }
                 column(5)->setValueAt(destRow, mean * validCells.count());
                 column(6)->setValueAt(destRow, max);
                 column(7)->setValueAt(destRow, min);
@@ -289,8 +297,16 @@ void TableStatistics::update(Table *t, const QString &colName)
                 column(0)->setTextAt(destRow, d_base->colLabel(colIndex));
                 column(1)->setTextAt(destRow, "[1:" + QString::number(rows) + "]");
                 column(2)->setValueAt(destRow, mean);
-                column(3)->setValueAt(destRow, gsl_stats_sd(data, 1, validCells.count()));
-                column(4)->setValueAt(destRow, gsl_stats_variance(data, 1, validCells.count()));
+                // The sample SD / variance need n >= 2 (GSL returns NaN for n = 1): leave the
+                // cells empty instead of writing NaN into the statistics table.
+                if (validCells.count() >= 2) {
+                    column(3)->setValueAt(destRow, gsl_stats_sd(data, 1, validCells.count()));
+                    column(4)->setValueAt(destRow,
+                                          gsl_stats_variance(data, 1, validCells.count()));
+                } else {
+                    column(3)->setInvalid(destRow, true);
+                    column(4)->setInvalid(destRow, true);
+                }
                 column(5)->setValueAt(destRow, mean * validCells.count());
                 column(6)->setValueAt(destRow, maxIndex + 1);
                 column(7)->setValueAt(destRow, max);

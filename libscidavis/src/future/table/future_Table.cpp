@@ -3324,6 +3324,15 @@ bool Table::load(XmlStreamReader *reader)
             reader->raiseError(tr("invalid row or column count"));
             return false;
         }
+        // A crafted rows="2000000000" made the vertical header (one entry per row) and every
+        // later resize of the columns allocate gigabytes; the limits match those of a <row>
+        // index (Column::load) and of the column count of an import.
+        constexpr int kMaxLoadRows = 1 << 26;
+        constexpr int kMaxLoadColumns = 65536;
+        if (rows < 0 || rows > kMaxLoadRows || cols < 0 || cols > kMaxLoadColumns) {
+            reader->raiseError(tr("row or column count out of range"));
+            return false;
+        }
 
         setRowCount(rows);
         // The columns are added in one appendColumns() call: adding them one by one ran the

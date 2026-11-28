@@ -1293,6 +1293,14 @@ bool Matrix::load(XmlStreamReader *reader)
             reader->raiseError(tr("invalid row or column count"));
             return false;
         }
+        // A crafted rows/columns pair allocated rows * columns doubles at once (gigabytes, or
+        // bad_alloc): the same 25M-cell limit as an imported Origin matrix (ImportOPJU).
+        constexpr qint64 kMaxLoadCells = 25000000LL;
+        if (rows < 0 || cols < 0 || rows > (1 << 26) || cols > 65536
+            || static_cast<qint64>(rows) * cols > kMaxLoadCells) {
+            reader->raiseError(tr("row or column count out of range"));
+            return false;
+        }
         struct ScopedBlockChangeSignals {
             Matrix::Private *priv;
             explicit ScopedBlockChangeSignals(Matrix::Private *p) : priv(p)

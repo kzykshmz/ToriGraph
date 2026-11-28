@@ -1,0 +1,877 @@
+diff --git a/OriginAnyParser.cpp b/OriginAnyParser.cpp
+index 05bfb95..f6bf826 100644
+--- a/OriginAnyParser.cpp
++++ b/OriginAnyParser.cpp
+@@ -37,6 +37,21 @@ void inline swap_bytes(unsigned char* data, int size) {int i = 0, j = size - 1;
+ #define GET_DOUBLE(iss, ovalue) {iss.read(reinterpret_cast<char *>(&ovalue), 8); swap_bytes(reinterpret_cast<unsigned char *>(&ovalue), 8);};
+ #endif
+ 
++namespace {
++// [liborigin-hardening] (ToriGraph 3rdparty/patches/liborigin-hardening.patch)
++// Hardening: truncated or corrupted files can yield objects that are shorter
++// than the fixed field offsets used by the decoders below. Return `s`, or a
++// zero-padded copy of it (stored in `buf`) when it is shorter than `n` bytes,
++// so that those fixed-offset accesses stay in bounds. Objects of valid files
++// are long enough and are passed through unchanged.
++const string& padTo(const string& s, string::size_type n, string& buf) {
++	if (s.size() >= n) return s;
++	buf.assign(s);
++	buf.resize(n, '\0');
++	return buf;
++}
++}
++
+ OriginAnyParser::OriginAnyParser(const string& fileName)
+ :	file(fileName.c_str(),ios::binary),
+ 	logfile(nullptr),
+@@ -44,6 +59,7 @@ OriginAnyParser::OriginAnyParser(const string& fileName)
+ 	curpos(0),
+ 	objectIndex(0),
+ 	parseError(0),
++	annotationDepth(0),
+ 	ispread(-1),
+ 	imatrix(-1),
+ 	iexcel(-1),
+@@ -197,12 +213,24 @@ string OriginAnyParser::readObjectAsString(unsigned int size) {
+ 	char c;
+ 	// read a size-byte blob of data followed by '\n'
+ 	if (size > 0) {
++		// do not trust the declared size: it must fit in the rest of the file
++		streamoff here = file.tellg();
++		if (here < 0 || (streamoff)size > (streamoff)d_file_size - here) {
++			LOG_PRINT(logfile, "Object size %u exceeds remaining file size\n", size)
++			parseError = 4;
++			return string();
++		}
+ 		// get a string large enough to hold the result, initialize it to all 0's
+ 		string blob = string(size, '\0');
+ 		// read data into that string
+ 		// cannot use '>>' operator because iendianfstream truncates it at first '\0'
+ 		file.read(&blob[0], size);
++		if (file.gcount() != (streamsize)size) {
++			parseError = 4;
++			return string();
++		}
+ 		// read the '\n'
++		c = 0;
+ 		file >> c;
+ 		if (c != '\n') {
+ 			curpos = file.tellg();
+@@ -248,12 +276,14 @@ void OriginAnyParser::readGlobalHeader() {
+ 	LOG_PRINT(logfile, " ends at %" PRId64 " [0x%" PRIx64 "]\n", curpos, curpos)
+ 
+ 	// when gh_size > 0x1B, a double with fileVersion/100 can be read at gh_data[0x1B:0x23]
+-	if (gh_size > 0x1B) {
++	if (gh_size > 0x1B && gh_data.size() >= 0x1B + 8) {
+ 		istringstream stmp;
+ 		stmp.str(gh_data.substr(0x1B));
+-		double dFileVersion;
++		double dFileVersion = 0.0;
+ 		GET_DOUBLE(stmp, dFileVersion)
+-		if (dFileVersion > 8.5) {
++		if (!(dFileVersion > 0.0 && dFileVersion < 1000.0)) {
++			// garbage (or NaN): keep the version derived from the file's first line
++		} else if (dFileVersion > 8.5) {
+ 			fileVersion = (unsigned int)trunc(dFileVersion*100.);
+ 		} else {
+ 			fileVersion = 10*(unsigned int)trunc(dFileVersion*10.);
+@@ -286,16 +316,24 @@ bool OriginAnyParser::readDataSetElement() {
+ 	dsh_start = curpos;
+ 	LOG_PRINT(logfile, "Column: header size %d [0x%X], starts at %" PRId64 " [0x%" PRIx64 "], ", dse_header_size, dse_header_size, curpos, curpos)
+ 	dse_header = readObjectAsString(dse_header_size);
++	if (dse_header.size() != dse_header_size) { // truncated or corrupted header
++		parseError = 4;
++		return false;
++	}
+ 
+ 	// get known info
+ 	string name(25,0);
+-	name = dse_header.substr(0x58,25);
++	if (dse_header.size() > 0x58) name = dse_header.substr(0x58,25);
+ 
+ 	// go to end of dataset header, get data size
+ 	file.seekg(dsh_start+dse_header_size+1, ios_base::beg);
+ 	dse_data_size = readObjectSize();
+ 	dsd_start = file.tellg();
+ 	string dse_data = readObjectAsString(dse_data_size);
++	if (dse_data.size() != dse_data_size) { // truncated or corrupted data
++		parseError = 4;
++		return false;
++	}
+ 	curpos = file.tellg();
+ 	LOG_PRINT(logfile, "data size %d [0x%X], from %" PRId64 " [0x%" PRIx64 "] to %" PRId64 " [0x%" PRIx64 "],", dse_data_size, dse_data_size, dsd_start, dsd_start, curpos, curpos)
+ 
+@@ -309,6 +347,10 @@ bool OriginAnyParser::readDataSetElement() {
+ 	dsm_start = file.tellg();
+ 	if (dse_mask_size > 0) LOG_PRINT(logfile, "\nmask size %d [0x%X], starts at %" PRId64 " [0x%" PRIx64 "]", dse_mask_size, dse_mask_size, dsm_start, dsm_start)
+ 	string dse_mask = readObjectAsString(dse_mask_size);
++	if (dse_mask.size() != dse_mask_size) {
++		parseError = 4;
++		return false;
++	}
+ 
+ 	// get mask values
+ 	if (dse_mask_size > 0) {
+@@ -339,10 +381,14 @@ bool OriginAnyParser::readWindowElement() {
+ 	wdh_start = curpos;
+ 	LOG_PRINT(logfile, "Window found: header size %d [0x%X], starts at %" PRId64 " [0x%" PRIx64 "]: ", wde_header_size, wde_header_size, curpos, curpos)
+ 	string wde_header = readObjectAsString(wde_header_size);
++	if (wde_header.size() != wde_header_size) {
++		parseError = 4;
++		return false;
++	}
+ 
+ 	// get known info
+ 	string name(25,0);
+-	name = wde_header.substr(0x02,25).c_str();
++	if (wde_header.size() > 0x02) name = wde_header.substr(0x02,25).c_str();
+ 	LOG_PRINT(logfile, "%s\n", name.c_str())
+ 
+ 	// classify type of window
+@@ -400,6 +446,10 @@ bool OriginAnyParser::readLayerElement() {
+ 	lyh_start = curpos;
+ 	LOG_PRINT(logfile, "  Layer found: header size %d [0x%X], starts at %" PRId64 " [0x%" PRIx64 "]\n", lye_header_size, lye_header_size, curpos, curpos)
+ 	string lye_header = readObjectAsString(lye_header_size);
++	if (lye_header.size() != lye_header_size) {
++		parseError = 4;
++		return false;
++	}
+ 
+ 	// get known info
+ 	getLayerProperties(lye_header, lye_header_size);
+@@ -498,10 +548,14 @@ bool OriginAnyParser::readAnnotationElement() {
+ 	anh_start = curpos;
+ 	LOG_PRINT(logfile, "    Annotation found: header size %d [0x%X], starts at %" PRId64 " [0x%" PRIx64 "]: ", ane_header_size, ane_header_size, curpos, curpos)
+ 	string ane_header = readObjectAsString(ane_header_size);
++	if (ane_header.size() != ane_header_size) {
++		parseError = 4;
++		return false;
++	}
+ 
+ 	// get known info
+ 	string name(41,0);
+-	name = ane_header.substr(0x46,41);
++	if (ane_header.size() > 0x46) name = ane_header.substr(0x46,41);
+ 	LOG_PRINT(logfile, "%s\n", name.c_str())
+ 
+ 	// go to end of annotation header
+@@ -516,6 +570,10 @@ bool OriginAnyParser::readAnnotationElement() {
+ 	andt1_start = file.tellg();
+ 	LOG_PRINT(logfile, "     block 1 size %d [0x%X] at %" PRId64 " [0x%" PRIx64 "]\n", ane_data_1_size, ane_data_1_size, andt1_start, andt1_start)
+ 	string andt1_data = readObjectAsString(ane_data_1_size);
++	if (andt1_data.size() != ane_data_1_size) {
++		parseError = 4;
++		return false;
++	}
+ 
+ 	// TODO: get known info
+ 
+@@ -534,7 +592,14 @@ bool OriginAnyParser::readAnnotationElement() {
+ 	if (((ane_data_1_size == 0x5e) || (ane_data_1_size == 0x0A)) && (ane_data_2_size == 0x04)) {
+ 		curpos = file.tellg();
+ 		LOG_PRINT(logfile, "  Annotation group found at %" PRId64 " [0x%" PRIx64 "] ...\n", curpos, curpos)
++		// bound the recursion: corrupted files could otherwise nest groups until the stack overflows
++		if (annotationDepth >= 64) {
++			parseError = 4;
++			return false;
++		}
++		++annotationDepth;
+ 		unsigned int angroup_size = readAnnotationList();
++		--annotationDepth;
+ 		curpos = file.tellg();
+ 		if (angroup_size > 0) {
+ 			LOG_PRINT(logfile, "  ... group end at %" PRId64 " [0x%" PRIx64 "]. Annotations: %d\n", curpos, curpos, angroup_size)
+@@ -542,6 +607,10 @@ bool OriginAnyParser::readAnnotationElement() {
+ 		andt2_data = string();
+ 	} else {
+ 		andt2_data = readObjectAsString(ane_data_2_size);
++		if (andt2_data.size() != ane_data_2_size) {
++			parseError = 4;
++			return false;
++		}
+ 		// TODO: get known info
+ 		// go to end of second data block
+ 		file.seekg(andt2_start+ane_data_2_size, ios_base::beg);
+@@ -557,6 +626,10 @@ bool OriginAnyParser::readAnnotationElement() {
+ 		LOG_PRINT(logfile, "     block 3 size %d [0x%X] at %" PRId64 " [0x%" PRIx64 "]\n", ane_data_3_size, ane_data_3_size, andt3_start, andt3_start)
+ 	}
+ 	string andt3_data = readObjectAsString(ane_data_3_size);
++	if (andt3_data.size() != ane_data_3_size) {
++		parseError = 4;
++		return false;
++	}
+ 
+ 	curpos = file.tellg();
+ 	LOG_PRINT(logfile, "    annotation ends at %" PRId64 " [0x%" PRIx64 "]\n", curpos, curpos)
+@@ -581,9 +654,14 @@ bool OriginAnyParser::readCurveElement() {
+ 	cvh_start = curpos;
+ 	LOG_PRINT(logfile, "    Curve: header size %d [0x%X], starts at %" PRId64 " [0x%" PRIx64 "], ", cve_header_size, cve_header_size, curpos, curpos)
+ 	string cve_header = readObjectAsString(cve_header_size);
++	if (cve_header.size() != cve_header_size) {
++		parseError = 4;
++		return false;
++	}
+ 
+ 	// TODO: get known info from curve header
+-	string name = cve_header.substr(0x12,12);
++	string name;
++	if (cve_header.size() > 0x12) name = cve_header.substr(0x12,12);
+ 
+ 	// go to end of header, get curve data size
+ 	file.seekg(cvh_start+cve_header_size+1, ios_base::beg);
+@@ -591,6 +669,10 @@ bool OriginAnyParser::readCurveElement() {
+ 	cvd_start = file.tellg();
+ 	LOG_PRINT(logfile, "data size %d [0x%X], from %" PRId64 " [0x%" PRIx64 "]", cve_data_size, cve_data_size, cvd_start, cvd_start)
+ 	string cve_data = readObjectAsString(cve_data_size);
++	if (cve_data.size() != cve_data_size) {
++		parseError = 4;
++		return false;
++	}
+ 
+ 	// TODO: get known info from curve data
+ 
+@@ -620,6 +702,10 @@ bool OriginAnyParser::readAxisBreakElement() {
+ 	curpos = file.tellg();
+ 	abd_start = curpos;
+ 	string abd_data = readObjectAsString(abe_data_size);
++	if (abd_data.size() != abe_data_size) {
++		parseError = 4;
++		return false;
++	}
+ 
+ 	// get known info
+ 
+@@ -645,6 +731,10 @@ bool OriginAnyParser::readAxisParameterElement(unsigned int naxis) {
+ 	curpos = file.tellg();
+ 	apd_start = curpos;
+ 	string apd_data = readObjectAsString(ape_data_size);
++	if (apd_data.size() != ape_data_size) {
++		parseError = 4;
++		return false;
++	}
+ 
+ 	// get known info
+ 
+@@ -660,7 +750,7 @@ bool OriginAnyParser::readAxisParameterElement(unsigned int naxis) {
+ bool OriginAnyParser::readParameterElement() {
+ 	// get parameter name
+ 	string par_name;
+-	char c;
++	char c = 0;
+ 
+ 	getline(file, par_name);
+ 	if (par_name[0] == '\0') {
+@@ -672,7 +762,7 @@ bool OriginAnyParser::readParameterElement() {
+ 	}
+ 	LOG_PRINT(logfile, " %s:", par_name.c_str())
+ 	// get value
+-	double value;
++	double value = 0.0;
+ 	file >> value;
+ 	LOG_PRINT(logfile, " %g\n", value)
+ 	// read the '\n'
+@@ -701,6 +791,10 @@ bool OriginAnyParser::readNoteElement() {
+ 	nwh_start = curpos;
+ 	LOG_PRINT(logfile, "  Note window found: header size %d [0x%X], starts at %" PRId64 " [0x%" PRIx64 "]\n", nwe_header_size, nwe_header_size, curpos, curpos)
+ 	string nwe_header = readObjectAsString(nwe_header_size);
++	if (nwe_header.size() != nwe_header_size) {
++		parseError = 4;
++		return false;
++	}
+ 
+ 	// TODO: get known info from header
+ 
+@@ -711,6 +805,10 @@ bool OriginAnyParser::readNoteElement() {
+ 	nwe_label_size = readObjectSize();
+ 	nwl_start = file.tellg();
+ 	string nwe_label = readObjectAsString(nwe_label_size);
++	if (nwe_label.size() != nwe_label_size) {
++		parseError = 4;
++		return false;
++	}
+ 	LOG_PRINT(logfile, "  label at %" PRId64 " [0x%" PRIx64 "]: %s\n", nwl_start, nwl_start, nwe_label.c_str())
+ 
+ 	// go to end of label
+@@ -721,6 +819,10 @@ bool OriginAnyParser::readNoteElement() {
+ 	nwe_contents_size = readObjectSize();
+ 	nwc_start = file.tellg();
+ 	string nwe_contents = readObjectAsString(nwe_contents_size);
++	if (nwe_contents.size() != nwe_contents_size) {
++		parseError = 4;
++		return false;
++	}
+ 	if (nwc_start > 0) {
+ 		LOG_PRINT(logfile, "  contents at %" PRId64 " [0x%" PRIx64 "]: \n%s\n", nwc_start, nwc_start, nwe_contents.c_str())
+ 	}
+@@ -771,6 +873,11 @@ unsigned int OriginAnyParser::readFolderTree(tree<ProjectNode>::iterator parent,
+ 	// folder header size, data, end mark
+ 	fle_header_size = readObjectSize();
+ 	string fle_header = readObjectAsString(fle_header_size);
++	// stop on corrupted data (and bound the recursion depth)
++	if (fle_header.size() != fle_header_size || file.fail() || depth > 128) {
++		parseError = 4;
++		return 0;
++	}
+ 	fle_eofh_size = readObjectSize(); // (usually 0)
+ 	if (fle_eofh_size != 0) {
+ 		LOG_PRINT(logfile, "Wrong end of folder header mark")
+@@ -785,6 +892,7 @@ unsigned int OriginAnyParser::readFolderTree(tree<ProjectNode>::iterator parent,
+ 	// additional properties
+ 	fle_prop_size = readObjectSize();
+ 	for (unsigned int i = 0; i < fle_prop_size; i++) {
++		if (file.fail()) break;
+ 		unsigned int obj_size = readObjectSize();
+ 		string obj_data = readObjectAsString(obj_size);
+ 	}
+@@ -808,6 +916,7 @@ unsigned int OriginAnyParser::readFolderTree(tree<ProjectNode>::iterator parent,
+ 	LOG_PRINT(logfile, "%d\n", number_of_files)
+ 
+ 	for (unsigned int i=0; i < number_of_files; i++) {
++		if (file.fail()) break;
+ 		readProjectLeaf(current_folder);
+ 	}
+ 
+@@ -819,12 +928,14 @@ unsigned int OriginAnyParser::readFolderTree(tree<ProjectNode>::iterator parent,
+ 	LOG_PRINT(logfile, "Number of subfolders at %" PRId64 " [0x%" PRIx64 "] ", curpos, curpos)
+ 	string fle_nfolders = readObjectAsString(number_of_folders_size);
+ 
++	stmp.clear();
+ 	stmp.str(fle_nfolders);
+ 	unsigned int number_of_folders = 0;
+ 	GET_INT(stmp, number_of_folders)
+ 	LOG_PRINT(logfile, "%d\n", number_of_folders)
+ 
+ 	for (unsigned int i=0; i < number_of_folders; i++) {
++		if (file.fail()) break;
+ 		depth++;
+ 		unsigned int files_in_subfolder = readFolderTree(current_folder, depth);
+ 		if (files_in_subfolder > 0) {
+@@ -891,6 +1002,7 @@ void OriginAnyParser::readAttachmentList() {
+ 		LOG_PRINT(logfile, " with %d attachments.\n", number_of_atts)
+ 
+ 		for (unsigned int i=0; i < number_of_atts; i++) {
++			if (file.fail()) break;
+ 			/* Header is a group of 7 integers followed by \n
+ 			1st  attachment mark (4096: 0x00 0x10 0x00 0x00)
+ 			2nd  attachment number ( <num_of_att)
+@@ -899,6 +1011,8 @@ void OriginAnyParser::readAttachmentList() {
+ 			*/
+ 			// get header
+ 			att_header = readObjectAsString(7*4);
++			if (att_header.size() != 7*4) break;
++			stmp.clear();
+ 			stmp.str(att_header);
+ 			GET_INT(stmp, att_mark) // should be 4096
+ 			GET_INT(stmp, iattno)
+@@ -935,12 +1049,19 @@ void OriginAnyParser::readAttachmentList() {
+ 		if (file.gcount() != 12) break;
+ 		// get header size, type and data size
+ 		unsigned int att_header_size=0, att_type=0, att_size=0;
++		stmp.clear();
+ 		stmp.str(att_header);
+ 		GET_INT(stmp, att_header_size)
+ 		GET_INT(stmp, att_type)
+ 		GET_INT(stmp, att_size)
+ 
+-		// get name and data
++		// get name and data; sizes must fit in the rest of the file
++		streamoff remaining = (streamoff)d_file_size - (streamoff)file.tellg();
++		if (att_header_size < 3*4 || (streamoff)(att_header_size - 3*4) > remaining
++			|| (streamoff)att_size > remaining - (streamoff)(att_header_size - 3*4)) {
++			parseError = 4;
++			break;
++		}
+ 		unsigned int name_size = att_header_size - 3*4;
+ 		string att_name = string(name_size, 0);
+ 		file.read(&att_name[0], name_size);
+@@ -953,7 +1074,10 @@ void OriginAnyParser::readAttachmentList() {
+ 	return;
+ }
+ 
+-bool OriginAnyParser::getColumnInfoAndData(const string& col_header, unsigned int col_header_size, const string& col_data, unsigned int col_data_size) {
++bool OriginAnyParser::getColumnInfoAndData(const string& col_header_in, unsigned int col_header_size, const string& col_data, unsigned int col_data_size) {
++	string col_header_buf;
++	const string& col_header = padTo(col_header_in, 0x80, col_header_buf);
++	if (col_data_size > col_data.size()) col_data_size = (unsigned int)col_data.size();
+ 	istringstream stmp(ios_base::binary);
+ 	short data_type;
+ 	char data_type_u;
+@@ -1029,7 +1153,7 @@ bool OriginAnyParser::getColumnInfoAndData(const string& col_header, unsigned in
+ 			GET_DOUBLE(stmp, f.begin)
+ 			double d;
+ 			GET_DOUBLE(stmp, d)
+-			f.end = f.begin + d*(f.totalPoints - 1);
++			f.end = f.begin + d*((double)f.totalPoints - 1.0);
+ 
+ 			LOG_PRINT(logfile, "\n NEW FUNCTION: %s = %s", f.name.c_str(), f.formula.c_str());
+ 			LOG_PRINT(logfile, ". Range [%g : %g], number of points: %d\n", f.begin, f.end, f.totalPoints);
+@@ -1099,16 +1223,16 @@ bool OriginAnyParser::getColumnInfoAndData(const string& col_header, unsigned in
+ 		stmp.str(col_data);
+ 		for(unsigned int i = 0; i < nr; ++i)
+ 		{
+-			double value;
++			double value = 0.0;
+ 			if(valuesize <= 8)	// Numeric, Time, Date, Month, Day
+ 			{
+ 				GET_DOUBLE(stmp, value)
+-				if ((i < 5) || (i > (nr-5))) {
++				if ((i < 5) || (i + 5 > nr)) {
+ 					LOG_PRINT(logfile, "%g ", value)
+ 				} else if (i == 5) {
+ 					LOG_PRINT(logfile, "... ")
+ 				}
+-				spreadSheets[spread].columns[(current_col-1)].data.push_back(value);
++				spreadSheets[spread].columns.back().data.push_back(value);
+ 			}
+ 			else if((data_type & 0x100) == 0x100) // Text&Numeric
+ 			{
+@@ -1117,12 +1241,12 @@ bool OriginAnyParser::getColumnInfoAndData(const string& col_header, unsigned in
+ 				if(c != 1) //value
+ 				{
+ 					GET_DOUBLE(stmp, value);
+-					if ((i < 5) || (i > (nr-5))) {
++					if ((i < 5) || (i + 5 > nr)) {
+ 						LOG_PRINT(logfile, "%g ", value)
+ 					} else if (i == 5) {
+ 						LOG_PRINT(logfile, "... ")
+ 					}
+-					spreadSheets[spread].columns[(current_col-1)].data.push_back(value);
++					spreadSheets[spread].columns.back().data.push_back(value);
+ 				}
+ 				else //text
+ 				{
+@@ -1132,12 +1256,12 @@ bool OriginAnyParser::getColumnInfoAndData(const string& col_header, unsigned in
+ 						svaltmp = string();
+ 						LOG_PRINT(logfile, "Non printable symbol found, place 1 for i=%d\n", i)
+ 					}
+-					if ((i < 5) || (i > (nr-5))) {
++					if ((i < 5) || (i + 5 > nr)) {
+ 						LOG_PRINT(logfile, "\"%s\" ", svaltmp.c_str())
+ 					} else if (i == 5) {
+ 						LOG_PRINT(logfile, "... ")
+ 					}
+-					spreadSheets[spread].columns[(current_col-1)].data.push_back(svaltmp);
++					spreadSheets[spread].columns.back().data.push_back(svaltmp);
+ 				}
+ 			}
+ 			else //text
+@@ -1148,12 +1272,12 @@ bool OriginAnyParser::getColumnInfoAndData(const string& col_header, unsigned in
+ 					svaltmp = string();
+ 					LOG_PRINT(logfile, "Non printable symbol found, place 2 for i=%d\n", i)
+ 				}
+-				if ((i < 5) || (i > (nr-5))) {
++				if ((i < 5) || (i + 5 > nr)) {
+ 					LOG_PRINT(logfile, "\"%s\" ", svaltmp.c_str())
+ 				} else if (i == 5) {
+ 					LOG_PRINT(logfile, "... ")
+ 				}
+-				spreadSheets[spread].columns[(current_col-1)].data.push_back(svaltmp);
++				spreadSheets[spread].columns.back().data.push_back(svaltmp);
+ 			}
+ 		}
+ 		LOG_PRINT(logfile, "\n\n")
+@@ -1179,14 +1303,14 @@ void OriginAnyParser::getMatrixValues(const string& col_data, unsigned int col_d
+ 	switch(data_type){
+ 		case 0x6001://double
+ 			for(unsigned int i = 0; i < size; ++i){
+-				double value;
++				double value = 0;
+ 				GET_DOUBLE(stmp, value)
+ 				matrixes[mIndex].sheets.back().data.push_back(value);
+ 			}
+ 			break;
+ 		case 0x6003://float
+ 			for(unsigned int i = 0; i < size; ++i){
+-				float value;
++				float value = 0;
+ 				GET_FLOAT(stmp, value)
+ 				matrixes[mIndex].sheets.back().data.push_back((double)value);
+ 			}
+@@ -1194,13 +1318,13 @@ void OriginAnyParser::getMatrixValues(const string& col_data, unsigned int col_d
+ 		case 0x6801://int
+ 			if (data_type_u == 8){//unsigned
+ 				for(unsigned int i = 0; i < size; ++i){
+-					unsigned int value;
++					unsigned int value = 0;
+ 					GET_INT(stmp, value)
+ 					matrixes[mIndex].sheets.back().data.push_back((double)value);
+ 				}
+ 			} else {
+ 				for(unsigned int i = 0; i < size; ++i){
+-					int value;
++					int value = 0;
+ 					GET_INT(stmp, value)
+ 					matrixes[mIndex].sheets.back().data.push_back((double)value);
+ 				}
+@@ -1209,13 +1333,13 @@ void OriginAnyParser::getMatrixValues(const string& col_data, unsigned int col_d
+ 		case 0x6803://short
+ 			if (data_type_u == 8){//unsigned
+ 				for(unsigned int i = 0; i < size; ++i){
+-					unsigned short value;
++					unsigned short value = 0;
+ 					GET_SHORT(stmp, value)
+ 					matrixes[mIndex].sheets.back().data.push_back((double)value);
+ 				}
+ 			} else {
+ 				for(unsigned int i = 0; i < size; ++i){
+-					short value;
++					short value = 0;
+ 					GET_SHORT(stmp, value)
+ 					matrixes[mIndex].sheets.back().data.push_back((double)value);
+ 				}
+@@ -1249,7 +1373,9 @@ void OriginAnyParser::getMatrixValues(const string& col_data, unsigned int col_d
+ 	}
+ }
+ 
+-void OriginAnyParser::getWindowProperties(Origin::Window& window, const string& wde_header, unsigned int wde_header_size) {
++void OriginAnyParser::getWindowProperties(Origin::Window& window, const string& wde_header_in, unsigned int wde_header_size) {
++	string wde_header_buf;
++	const string& wde_header = padTo(wde_header_in, 0x70, wde_header_buf);
+ 	window.objectID = objectIndex;
+ 	++objectIndex;
+ 
+@@ -1269,7 +1395,9 @@ void OriginAnyParser::getWindowProperties(Origin::Window& window, const string&
+ 		window.state = Window::Maximized;
+ 
+ 	if (wde_header[0x42] != 0) {
+-		window.windowBackgroundColorGradient = (ColorGradientDirection)(wde_header[0x42] >> 2);
++		int gradient = wde_header[0x42] >> 2;
++		// keep the enum in range on corrupted files
++		window.windowBackgroundColorGradient = (gradient >= NoGradient && gradient <= BottomRight) ? (ColorGradientDirection)gradient : NoGradient;
+ 		window.windowBackgroundColorBase.type = Color::Regular;
+ 		window.windowBackgroundColorBase.regular = wde_header[0x43];
+ 		window.windowBackgroundColorEnd.type =  Color::Regular;
+@@ -1344,7 +1472,9 @@ void OriginAnyParser::getWindowProperties(Origin::Window& window, const string&
+ 	}
+ }
+ 
+-void OriginAnyParser::getLayerProperties(const string& lye_header, unsigned int lye_header_size) {
++void OriginAnyParser::getLayerProperties(const string& lye_header_in, unsigned int lye_header_size) {
++	string lye_header_buf;
++	const string& lye_header = padTo(lye_header_in, 0x90, lye_header_buf);
+ 	istringstream stmp;
+ 
+ 	if (ispread != -1) { // spreadsheet
+@@ -1353,6 +1483,7 @@ void OriginAnyParser::getLayerProperties(const string& lye_header, unsigned int
+ 
+ 	} else if (imatrix != -1) { // matrix
+ 
++		if (ilayer < 0 || (size_t)ilayer >= matrixes[imatrix].sheets.size()) return; // corrupted file
+ 		MatrixSheet& sheet = matrixes[imatrix].sheets[ilayer];
+ 
+ 		unsigned short width = 8;
+@@ -1381,7 +1512,7 @@ void OriginAnyParser::getLayerProperties(const string& lye_header, unsigned int
+ 	} else if (iexcel != -1) { // excel
+ 
+ 		excels[iexcel].loose = false;
+-		if (lye_header_size > 0xD2) {
++		if (lye_header_size > 0xD2 && ilayer >= 0 && (size_t)ilayer < excels[iexcel].sheets.size()) {
+ 			excels[iexcel].sheets[ilayer].name = lye_header.substr(0xD2,32).c_str();
+ 		}
+ 
+@@ -1428,6 +1559,7 @@ void OriginAnyParser::getLayerProperties(const string& lye_header, unsigned int
+ 		GET_SHORT(stmp, glayer.clientRect.bottom)
+ 
+ 		unsigned char border = lye_header[0x89];
++		if (border > 0x80 + BlackOut) border = 0; // unknown value: no border, keeps the enum in range
+ 		glayer.borderType = (BorderType)(border >= 0x80 ? border-0x80 : None);
+ 
+ 		if (lye_header_size > 0x107)
+@@ -1436,8 +1568,10 @@ void OriginAnyParser::getLayerProperties(const string& lye_header, unsigned int
+ 	}
+ }
+ 
+-Origin::Color OriginAnyParser::getColor(const string& strbincolor) {
++Origin::Color OriginAnyParser::getColor(const string& strbincolor_in) {
+ 	/* decode a color value from a 4 byte binary string */
++	string strbincolor_buf;
++	const string& strbincolor = padTo(strbincolor_in, 4, strbincolor_buf);
+ 	Origin::Color result;
+ 	unsigned char sbincolor[4];
+ 	for (int i=0; i < 4; i++) {
+@@ -1490,7 +1624,13 @@ Origin::Color OriginAnyParser::getColor(const string& strbincolor) {
+ 	return result;
+ }
+ 
+-void OriginAnyParser::getAnnotationProperties(const string& anhd, unsigned int anhdsz, const string& andt1, unsigned int andt1sz, const string& andt2, unsigned int andt2sz, const string& andt3, unsigned int andt3sz) {
++void OriginAnyParser::getAnnotationProperties(const string& anhd_in, unsigned int anhdsz, const string& andt1_in, unsigned int andt1sz, const string& andt2_in, unsigned int andt2sz, const string& andt3, unsigned int andt3sz) {
++	string anhd_buf, andt1_buf, andt2_buf;
++	const string& anhd = padTo(anhd_in, 0x70, anhd_buf);
++	const string& andt1 = padTo(andt1_in, 0x80, andt1_buf);
++	const string& andt2 = padTo(andt2_in, 0x248, andt2_buf);
++	if (andt1sz > andt1_in.size()) andt1sz = (unsigned int)andt1_in.size();
++	if (andt2sz > andt2_in.size()) andt2sz = (unsigned int)andt2_in.size();
+ 	istringstream stmp;
+ 	(void) anhdsz; (void) andt3; (void) andt3sz;
+ 
+@@ -1505,6 +1645,7 @@ void OriginAnyParser::getAnnotationProperties(const string& anhd, unsigned int a
+ 
+ 	} else if (imatrix != -1) {
+ 
++		if (ilayer < 0 || (size_t)ilayer >= matrixes[imatrix].sheets.size()) return; // corrupted file
+ 		MatrixSheet& sheet = matrixes[imatrix].sheets[ilayer];
+ 		string sec_name = anhd.substr(0x46,41).c_str();
+ 
+@@ -1527,6 +1668,7 @@ void OriginAnyParser::getAnnotationProperties(const string& anhd, unsigned int a
+ 
+ 	} else if (iexcel != -1) {
+ 
++		if (ilayer < 0 || (size_t)ilayer >= excels[iexcel].sheets.size()) return; // corrupted file
+ 		string sec_name = anhd.substr(0x46,41).c_str();
+ 		vector<Origin::SpreadColumn>::difference_type col_index = findExcelColumnByName(iexcel, ilayer, sec_name);
+ 		if (col_index != -1){ //check if it is a formula
+@@ -1548,6 +1690,7 @@ void OriginAnyParser::getAnnotationProperties(const string& anhd, unsigned int a
+ 		unsigned char attach = anhd[0x28];
+ 		if (attach >= (unsigned char)Attach::End_) attach = Attach::Frame;
+ 		unsigned char border = anhd[0x29];
++		if (border > 0x80 + BlackOut) border = 0; // unknown value: no border, keeps the enum in range
+ 
+ 		Color color = getColor(anhd.substr(0x33,4));
+ 
+@@ -1924,7 +2067,11 @@ void OriginAnyParser::getAnnotationProperties(const string& anhd, unsigned int a
+ 	return;
+ }
+ 
+-void OriginAnyParser::getCurveProperties(const string& cvehd, unsigned int cvehdsz, const string& cvedt, unsigned int cvedtsz) {
++void OriginAnyParser::getCurveProperties(const string& cvehd_in, unsigned int cvehdsz, const string& cvedt, unsigned int cvedtsz) {
++	string cvehd_buf;
++	const string& cvehd = padTo(cvehd_in, 0x150, cvehd_buf);
++	if (cvehdsz > cvehd_in.size()) cvehdsz = (unsigned int)cvehd_in.size();
++	if (cvedtsz > cvedt.size()) cvedtsz = (unsigned int)cvedt.size();
+ 	istringstream stmp;
+ 
+ 	if (ispread != -1) { // spreadsheet: curves are columns
+@@ -2031,6 +2178,7 @@ void OriginAnyParser::getCurveProperties(const string& cvehd, unsigned int cvehd
+ 
+ 	} else if (imatrix != -1) {
+ 
++		if (ilayer < 0 || (size_t)ilayer >= matrixes[imatrix].sheets.size()) return; // corrupted file
+ 		MatrixSheet sheet = matrixes[imatrix].sheets[ilayer];
+ 		unsigned char c1 = cvehd[0x1E];
+ 		unsigned char c2 = cvehd[0x1F];
+@@ -2057,7 +2205,9 @@ void OriginAnyParser::getCurveProperties(const string& cvehd, unsigned int cvehd
+ 		stmp.str(cvehd.substr(0x04));
+ 		GET_SHORT(stmp, dataID)
+ 
++		if (dataID == 0 || dataID > datasets.size()) return; // corrupted file
+ 		unsigned int isheet = datasets[dataID-1].sheet;
++		if (isheet >= excels[iexcel].sheets.size()) return; // corrupted file
+ 		vector<Origin::SpreadColumn>::difference_type col_index = findExcelColumnByName(iexcel, isheet, name);
+ 		if (col_index != -1) {
+ 			SpreadColumn::ColumnType type;
+@@ -2473,7 +2623,9 @@ void OriginAnyParser::getCurveProperties(const string& cvehd, unsigned int cvehd
+ 	}
+ }
+ 
+-void OriginAnyParser::getAxisBreakProperties(const string& abdata, unsigned int abdatasz) {
++void OriginAnyParser::getAxisBreakProperties(const string& abdata_in, unsigned int abdatasz) {
++	string abdata_buf;
++	const string& abdata = padTo(abdata_in, 0x30, abdata_buf);
+ 	istringstream stmp;
+ 	(void) abdatasz;
+ 
+@@ -2518,7 +2670,9 @@ void OriginAnyParser::getAxisBreakProperties(const string& abdata, unsigned int
+ 	}
+ }
+ 
+-void OriginAnyParser::getAxisParameterProperties(const string& apdata, unsigned int apdatasz, int naxis) {
++void OriginAnyParser::getAxisParameterProperties(const string& apdata_in, unsigned int apdatasz, int naxis) {
++	string apdata_buf;
++	const string& apdata = padTo(apdata_in, 0x50, apdata_buf);
+ 	istringstream stmp;
+ 	static int iaxispar = 0;
+ 
+@@ -2745,14 +2899,17 @@ void OriginAnyParser::getAxisParameterProperties(const string& apdata, unsigned
+ 	}
+ }
+ 
+-void OriginAnyParser::getNoteProperties(const string& nwehd, unsigned int nwehdsz, const string& nwelb, unsigned int nwelbsz, const string& nwect, unsigned int nwectsz) {
++void OriginAnyParser::getNoteProperties(const string& nwehd_in, unsigned int nwehdsz, const string& nwelb, unsigned int nwelbsz, const string& nwect, unsigned int nwectsz) {
++	string nwehd_buf;
++	const string& nwehd = padTo(nwehd_in, 0x40, nwehd_buf);
++	if (nwehdsz > nwehd_in.size()) nwehdsz = (unsigned int)nwehd_in.size();
+ 	LOG_PRINT(logfile, "OriginAnyParser::getNoteProperties()");
+ 	istringstream stmp;
+ 	(void) nwehdsz; (void) nwelbsz; (void) nwectsz;
+ 
+ 	// note window position and size
+ 	Rect rect;
+-	unsigned int coord;
++	unsigned int coord = 0;
+ 	stmp.str(nwehd);
+ 	GET_INT(stmp, coord)
+ 	rect.left = static_cast<short>(coord);
+@@ -2812,7 +2969,7 @@ void OriginAnyParser::getNoteProperties(const string& nwehd, unsigned int nwehds
+ 
+ 	notes.back().hidden = ((state & 0x40) != 0);
+ 
+-	if (labellen > 1) {
++	if (labellen > 1 && labellen <= nwect.size()) {
+ 		notes.back().label = nwect.substr(0,labellen);
+ 		notes.back().text = nwect.substr(labellen).c_str();
+ 	} else {
+@@ -2820,7 +2977,8 @@ void OriginAnyParser::getNoteProperties(const string& nwehd, unsigned int nwehds
+ 	}
+ }
+ 
+-void OriginAnyParser::getColorMap(ColorMap& cmap, const string& cmapdata, unsigned int cmapdatasz) {
++void OriginAnyParser::getColorMap(ColorMap& cmap, const string& cmapdata_in, unsigned int cmapdatasz) {
++	if (cmapdatasz > cmapdata_in.size()) cmapdatasz = (unsigned int)cmapdata_in.size();
+ 	istringstream stmp;
+ 	unsigned int cmoffset = 0;
+ 	// color maps for matrix annotations have a different offset than graph curve's colormaps
+@@ -2832,16 +2990,20 @@ void OriginAnyParser::getColorMap(ColorMap& cmap, const string& cmapdata, unsign
+ 		return;
+ 	}
+ 
+-	stmp.str(cmapdata.substr(cmoffset));
++	if (cmoffset + 4 > cmapdatasz) return;
++	stmp.str(cmapdata_in.substr(cmoffset));
+ 	unsigned int colorMapSize = 0;
+ 	GET_INT(stmp, colorMapSize)
+ 
+-	// check we have enough data to fill the map
+-	unsigned int minDataSize = cmoffset + 0x114 + (colorMapSize+2)*0x38;
++	// check we have enough data to fill the map (64-bit: colorMapSize comes from the file)
++	unsigned long long minDataSize = cmoffset + 0x114 + ((unsigned long long)colorMapSize+2)*0x38;
+ 	if (minDataSize > cmapdatasz) {
+-		LOG_PRINT(logfile, "WARNING: Too few data while getting ColorMap. Needed: at least %d bytes. Have: %d bytes.\n", minDataSize, cmapdatasz)
++		LOG_PRINT(logfile, "WARNING: Too few data while getting ColorMap. Needed: at least %llu bytes. Have: %d bytes.\n", minDataSize, cmapdatasz)
+ 		return;
+ 	}
++	// the loop below reads one more level than checked above: zero-pad the last one
++	string cmapdata_buf;
++	const string& cmapdata = padTo(cmapdata_in, (string::size_type)(minDataSize + 0x38), cmapdata_buf);
+ 
+ 	unsigned int lvl_offset = 0;
+ 	for (unsigned int i = 0; i < colorMapSize + 3; ++i) {
+@@ -2879,9 +3041,11 @@ void OriginAnyParser::getColorMap(ColorMap& cmap, const string& cmapdata, unsign
+ 
+ }
+ 
+-void OriginAnyParser::getZcolorsMap(ColorMap& colorMap, const string& cmapdata, unsigned int cmapdatasz) {
++void OriginAnyParser::getZcolorsMap(ColorMap& colorMap, const string& cmapdata_in, unsigned int cmapdatasz) {
+ 	istringstream stmp;
+ 	(void) cmapdatasz;
++	string cmapdata_buf;
++	const string& cmapdata = padTo(cmapdata_in, 0x80, cmapdata_buf);
+ 
+ 	Color lowColor;//color below
+ 	lowColor.type = Origin::Color::Custom;
+@@ -2897,9 +3061,14 @@ void OriginAnyParser::getZcolorsMap(ColorMap& colorMap, const string& cmapdata,
+ 	highColor.custom[2] = cmapdata[0x14];
+ 	// skip an unsigned char at 0x15
+ 
+-	unsigned short colorMapSize;
++	unsigned short colorMapSize = 0;
+ 	stmp.str(cmapdata.substr(0x16));
+ 	GET_SHORT(stmp, colorMapSize)
++	// the level loop below reads up to 0x80+10*colorMapSize bytes
++	if (0x80 + 10*(size_t)colorMapSize > cmapdata.size()) {
++		LOG_PRINT(logfile, "WARNING: Too few data while getting Z colors map.\n")
++		return;
++	}
+ 	// skip a short at 0x18-0x19
+ 
+ 	for (int i = 0; i < 4; ++i) {//low, high, middle and missing data colors
+@@ -2910,13 +3079,13 @@ void OriginAnyParser::getZcolorsMap(ColorMap& colorMap, const string& cmapdata,
+ 		color.custom[2] = cmapdata[0x1C+4*i];
+ 	}
+ 
+-	double zmin, zmax, zmissing;
++	double zmin = 0, zmax = 0, zmissing = 0;
+ 	stmp.str(cmapdata.substr(0x2A));
+ 	GET_DOUBLE(stmp, zmin);
+ 	GET_DOUBLE(stmp, zmax);
+ 	GET_DOUBLE(stmp, zmissing);
+ 
+-	short val;
++	short val = 0;
+ 	for (int i = 0; i < 2; ++i) {
+ 		Color color; (void) color;
+ 		color.type = Origin::Color::Custom;
+@@ -2963,7 +3132,7 @@ void OriginAnyParser::getProjectLeafProperties(tree<ProjectNode>::iterator curre
+ 	LOG_PRINT(logfile,"file_type=%d file_object_id=%d\n",file_type,file_object_id);
+ 	if (file_type == 0x100000) { // Note window
+ 		LOG_PRINT(logfile,"notes.size()=%d\n",(int)notes.size());
+-		if ((file_object_id <= notes.size()) && (notes.size()>0)) {
++		if (file_object_id < notes.size()) {
+ 			projectTree.append_child(current_folder, ProjectNode(notes[file_object_id].name, ProjectNode::Note));
+ 		}
+ 	} else { // other windows
+@@ -2975,7 +3144,9 @@ void OriginAnyParser::getProjectLeafProperties(tree<ProjectNode>::iterator curre
+ 	}
+ }
+ 
+-void OriginAnyParser::getProjectFolderProperties(tree<ProjectNode>::iterator current_folder, const string& flehd, unsigned int flehdsz) {
++void OriginAnyParser::getProjectFolderProperties(tree<ProjectNode>::iterator current_folder, const string& flehd_in, unsigned int flehdsz) {
++	string flehd_buf;
++	const string& flehd = padTo(flehd_in, 0x20, flehd_buf);
+ 	istringstream stmp;
+ 	(void) flehdsz;
+ 
+diff --git a/OriginAnyParser.h b/OriginAnyParser.h
+index bd7c1ae..71f61d9 100644
+--- a/OriginAnyParser.h
++++ b/OriginAnyParser.h
+@@ -25,6 +25,7 @@
+ #include "endianfstream.hh"
+ #include <string>
+ #include <cmath> // for floor()
++#include <limits>
+ 
+ using namespace std;
+ using namespace Origin;
+@@ -73,7 +74,11 @@ protected:
+ 	inline time_t doubleToPosixTime(double jdt)
+ 	{
+ 		/* 2440587.5 is julian date for the unixtime epoch */
+-		return (time_t) floor((jdt - 2440587) * 86400. + 0.5);
++		double t = floor((jdt - 2440587) * 86400. + 0.5);
++		// NaN or out of time_t range (corrupted file): avoid an undefined conversion
++		if (!(t >= (double)numeric_limits<time_t>::min() && t < (double)numeric_limits<time_t>::max()))
++			return 0;
++		return (time_t) t;
+ 	}
+ 
+ 	iendianfstream file;
+@@ -82,6 +87,7 @@ protected:
+ 	streamsize d_file_size;
+ 	streamoff curpos;
+ 	unsigned int objectIndex, parseError;
++	unsigned int annotationDepth; // nesting of annotation groups (bounded, see readAnnotationElement)
+ 	vector<Origin::SpreadSheet>::difference_type ispread;
+ 	vector<Origin::Matrix>::difference_type imatrix;
+ 	vector<Origin::Excel>::difference_type iexcel;
+diff --git a/OriginFile.cpp b/OriginFile.cpp
+index c3b1de9..f18cae4 100644
+--- a/OriginFile.cpp
++++ b/OriginFile.cpp
+@@ -55,9 +55,10 @@ OriginFile::OriginFile(const string& fileName)
+ 
+ 	string vers;
+ 	getline(file, vers);
+-	long majorVersion = strtol(vers.substr(5,1).c_str(),nullptr,10);
++	// short or garbage first line: leave versions at 0, parse() rejects the file
++	long majorVersion = (vers.size() > 5) ? strtol(vers.substr(5,1).c_str(),nullptr,10) : 0;
+ 	//char locale_decpoint = vers[6];
+-	buildVersion = strtol(vers.substr(7).c_str(),nullptr,10);
++	buildVersion = (vers.size() > 7) ? strtol(vers.substr(7).c_str(),nullptr,10) : 0;
+ 	//long buildNumber = strtol(vers.substr(12).c_str(),0,10);
+ 	file.close();
+ 
+diff --git a/OriginParser.cpp b/OriginParser.cpp
+index b542c2e..3cb8f24 100644
+--- a/OriginParser.cpp
++++ b/OriginParser.cpp
+@@ -221,7 +221,9 @@ void OriginParser::convertSpreadToExcel(vector<Origin::SpreadSheet>::size_type s
+ 		int pos = (int)(it->name.find_last_of("@"));
+ 		if(pos != -1)
+ 		{
+-			index = strtol(it->name.substr(pos + 1).c_str(), nullptr, 10) - 1;
++			long sheetno = strtol(it->name.substr(pos + 1).c_str(), nullptr, 10);
++			// corrupted sheet number: do not index out of range or allocate huge vectors
++			index = (sheetno >= 1 && sheetno <= 65535) ? (unsigned int)(sheetno - 1) : 0;
+ 			it->name = it->name.substr(0, pos);
+ 		}
+ 

@@ -1066,3 +1066,141 @@ def test_connect_closes_transport_on_post_connect_failure(monkeypatch: pytest.Mo
         tg_client.connect("tcp://127.0.0.1:9999", timeout=1.0, check_version=True)
     assert closed_ver["count"] == 1
 
+
+
+@pytest.mark.parametrize(
+    "host, expected",
+    [
+        ("127.0.0.1", True),
+        ("127.1.2.3", True),
+        ("localhost", True),
+        ("LocalHost", True),
+        ("::1", True),
+        ("[::1]", True),
+        ("0:0:0:0:0:0:0:1", True),
+        ("127.attacker.example", False),
+        ("127.0.0.1.nip.io", False),
+        ("localhost.attacker.example", False),
+        ("10.0.0.1", False),
+        ("::2", False),
+        ("", False),
+    ],
+)
+def test_is_loopback_host_only_accepts_loopback_literals_and_localhost(
+    host: str, expected: bool
+) -> None:
+    """A DNS name that merely starts with '127.' is not loopback (token must not leak to it)."""
+    assert tg_client._is_loopback_host(host) is expected
+
+
+def test_local_token_file_not_sent_to_127_prefixed_dns_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.delenv("TORIGRAPH_RPC_TOKEN", raising=False)
+    tok_dir = tmp_path / "ToriGraph" / "rpc"
+    tok_dir.mkdir(parents=True)
+    (tok_dir / "tcp_18901.token").write_text("local-secret\n", encoding="utf-8")
+    assert _resolve_tcp_auth_token("127.0.0.1", 18901) == "local-secret"
+    assert _resolve_tcp_auth_token("127.attacker.example", 18901) == ""
+    assert _resolve_tcp_auth_token("127.0.0.1.nip.io", 18901) == ""
+
+
+def test_nested_batch_rejects_outer_step_tokens() -> None:
+    """An outer batch's $steps[i] token used inside an inner batch would resolve against the
+    inner batch (which is flushed first and numbers its steps from 0): it is refused."""
+    t = MockTransport([])
+    s = Session(t)
+
+    # outer TableProxy / result-dict token passed to a call recorded by the inner batch
+    with pytest.raises(tg_client.BatchTokenScopeError, match=r"\$steps\[0\]\.name"):
+        with s.batch():
+            wb = s.new_workbook("Book1")
+            with s.batch():
+                s.table("T1").set_cell(0, 0, 1.0)
+                wb.add_sheet("S2")
+    assert s._active_batch is None
+
+    with pytest.raises(tg_client.BatchTokenScopeError):
+        with s.batch():
+            res = s.call("table.create", name="T9")
+            with s.batch():
+                s.call("table.set_cell", table=res["name"], row=0, col=0, value=1.0)
+    assert s._active_batch is None
+
+    # a BatchStepRef from the outer BatchContext.add() used in the inner add()
+    with pytest.raises(tg_client.BatchTokenScopeError):
+        with s.batch() as outer:
+            ref = outer.add("table.create", name="T10")
+            with s.batch() as inner:
+                inner.add("table.set_cell", table=ref.name, row=0, col=0, value=1.0)
+    assert s._active_batch is None
+
+    # nested in a list / dict value as well
+    with pytest.raises(tg_client.BatchTokenScopeError):
+        with s.batch():
+            res = s.call("table.create", name="T11")
+            with s.batch():
+                s.call("plot.xy", tables=[res["name"]], opts={"t": res["table"]})
+    assert s._active_batch is None
+
+    # nothing was sent for any of the refused pipelines
+    assert t.sent == []
+
+
+def test_nested_batch_own_tokens_and_outer_proxy_patching() -> None:
+    """Tokens stay usable in their own batch; a proxy built inside the inner batch from an
+    outer token is renamed from the *outer* step result, not the inner step of that index."""
+    t = MockTransport(
+        [
+            _ok(
+                {
+                    "ok": True,
+                    "completed": 2,
+                    "total": 2,
+                    "rolled_back": False,
+                    "results": [{"ok": True, "name": "InnerBook"}, {"ok": True}],
+                }
+            ),
+            _ok(
+                {
+                    "ok": True,
+                    "completed": 2,
+                    "total": 2,
+                    "rolled_back": False,
+                    "results": [{"ok": True, "name": "OuterBook"}, {"ok": True, "table": "OuterBook_S"}],
+                }
+            ),
+        ]
+    )
+    s = Session(t)
+    with s.batch():
+        wb = s.new_workbook("Outer")
+        with s.batch():
+            iwb = s.new_workbook("Inner")
+            iwb.add_sheet("A")  # inner token inside the inner batch: fine
+            alias = WorkbookProxy(s, wb.name)  # outer token: registered with the outer batch
+        wb.add_sheet("S")  # outer token back in the outer batch: fine
+
+    inner_cmds = t.sent[0][0]["params"]["commands"]
+    outer_cmds = t.sent[1][0]["params"]["commands"]
+    assert inner_cmds[1]["params"]["book"] == "$steps[0].name"
+    assert outer_cmds[1]["params"]["book"] == "$steps[0].name"
+    assert iwb.name == "InnerBook"
+    assert wb.name == "OuterBook"
+    assert alias.name == "OuterBook"
+
+
+def test_batch_token_is_plain_str_for_json_and_comparison() -> None:
+    t = MockTransport([])
+    s = Session(t)
+    b = s.batch()
+    with b:
+        res = s.call("table.create", name="T1")
+        tok = res["name"]
+        assert tok == "$steps[0].name"
+        assert isinstance(tok, str)
+        assert json.dumps({"t": tok}) == '{"t": "$steps[0].name"}'
+        assert f"{tok}" == "$steps[0].name"
+        b.commands.clear()  # nothing to flush

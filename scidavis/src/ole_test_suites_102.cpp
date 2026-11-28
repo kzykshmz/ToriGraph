@@ -479,6 +479,7 @@ int runSuite102PlotRound2(ApplicationWindow *mw)
                                   << str102(majors102(gc, QwtPlot::xBottom)) << " y "
                                   << str102(majors102(gc, QwtPlot::yLeft)));
 
+#ifdef Q_OS_WIN // graph.export_ole needs the Windows OLE / EMF renderer
                 const QString emf = tmp.filePath(gname + QStringLiteral(".emf"));
                 CHECK102(Rpc102::ok(rpc.call(QStringLiteral("graph.export_ole"),
                                              QJsonObject{ { "graph", gname },
@@ -492,6 +493,7 @@ int runSuite102PlotRound2(ApplicationWindow *mw)
                          "102b: " << preset << " ticks changed by export_ole: x "
                                   << str102(majors102(g, QwtPlot::xBottom)) << " y "
                                   << str102(majors102(g, QwtPlot::yLeft)));
+#endif
             }
         }
 

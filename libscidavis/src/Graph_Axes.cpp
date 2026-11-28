@@ -1006,7 +1006,8 @@ void Graph::enableAxis(int axis, bool on)
 void Graph::enableAxes(const QStringList &list)
 {
     int i;
-    for (i = 0; i < QwtPlot::axisCnt; i++) {
+    // list[0] is the "EnabledAxes" keyword; a damaged project may carry fewer fields.
+    for (i = 0; i < QwtPlot::axisCnt && i + 1 < list.size(); i++) {
         bool ok = list[i + 1].toInt();
         d_plot->enableAxis(i, ok);
     }
@@ -1045,6 +1046,9 @@ void applyAxisBaselineDist(QwtScaleWidget *scale, int dist)
 {
     if (!scale)
         return;
+    // Plot::updateLayout() negates and adds this offset in int; keep damaged project values
+    // (e.g. -2147483648) in a sane pixel range.
+    dist = std::clamp(dist, -10000, 10000);
     if (dist < 0) {
         scale->setProperty("_toriNegBaseline", dist);
         scale->setMargin(0);
@@ -1076,6 +1080,8 @@ void Graph::setAxesBaseline(const QList<int> &lst)
 
 void Graph::setAxesBaseline(QStringList &lst)
 {
+    if (lst.isEmpty())
+        return;
     lst.removeAll(lst.first());
     for (int i = 0; i < QwtPlot::axisCnt && i < lst.size(); i++) {
         QwtScaleWidget *scale = (QwtScaleWidget *)d_plot->axisWidget(i);
@@ -1128,6 +1134,8 @@ void Graph::setLabelsNumericFormat(int axis, const QStringList &l)
     if (!sd->hasComponent(QwtAbstractScaleDraw::Labels) || axisType[axis] != AxisType::Numeric)
         return;
 
+    if (axis < 0 || 2 * axis + 1 >= l.size())
+        return;
     int format = l[2 * axis].toInt();
     int prec = l[2 * axis + 1].toInt();
     setLabelsNumericFormat(axis, format, prec, axesFormulas[axis]);
@@ -1203,7 +1211,7 @@ void Graph::setMajorTicksType(const QList<int> &lst)
 
 void Graph::setMajorTicksType(const QStringList &lst)
 {
-    for (int i = 0; i < (int)lst.count(); i++)
+    for (int i = 0; i < (int)lst.count() && i < QwtPlot::axisCnt; i++)
         d_plot->setMajorTicksType(i, lst[i].toInt());
 }
 
@@ -1218,7 +1226,7 @@ void Graph::setMinorTicksType(const QList<int> &lst)
 
 void Graph::setMinorTicksType(const QStringList &lst)
 {
-    for (int i = 0; i < (int)lst.count(); i++)
+    for (int i = 0; i < (int)lst.count() && i < QwtPlot::axisCnt; i++)
         d_plot->setMinorTicksType(i, lst[i].toInt());
 }
 
@@ -1742,7 +1750,7 @@ QColor Graph::axisTitleColor(int axis)
 
 void Graph::setAxesNumColors(const QStringList &colors)
 {
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 4 && i < colors.size(); i++) {
         QwtScaleWidget *scale = (QwtScaleWidget *)d_plot->axisWidget(i);
         if (scale) {
             QPalette pal = scale->palette();
@@ -1754,7 +1762,7 @@ void Graph::setAxesNumColors(const QStringList &colors)
 
 void Graph::setAxesColors(const QStringList &colors)
 {
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 4 && i < colors.size(); i++) {
         QwtScaleWidget *scale = (QwtScaleWidget *)d_plot->axisWidget(i);
         if (scale) {
             QPalette pal = scale->palette();
@@ -1874,7 +1882,7 @@ int Graph::axisTitleAlignment(int axis)
 
 void Graph::setAxesTitlesAlignment(const QStringList &align)
 {
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 4 && i + 1 < align.size(); i++) {
         QwtText t = d_plot->axisTitle(i);
         t.setRenderFlags(align[i + 1].toInt());
         d_plot->setAxisTitle(i, t);

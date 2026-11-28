@@ -676,7 +676,8 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         }
         std::sort(rangeX.begin(), rangeX.end());
         for (size_t i = 1; i < rangeX.size(); ++i) {
-            if (!(rangeX[i] > rangeX[i - 1] + 1e-15)) {
+            // Strictly increasing, with no absolute gap: X in fs / fm steps (5e-16) is valid data.
+            if (!(rangeX[i] > rangeX[i - 1])) {
                 throwInvalidParams(
                         QStringLiteral("curvemath.integrate requires strictly distinct X values (duplicate X=%1 detected).")
                                 .arg(rangeX[i]));
@@ -4047,8 +4048,14 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         int a255 = 64;
         if (params.contains(QStringLiteral("alpha"))) {
             const double rawA = params.value(QStringLiteral("alpha")).toDouble(64.0);
-            a255 = (rawA <= 1.0 && rawA >= 0.0) ? int(std::round(rawA * 255.0))
-                                                : std::clamp(int(rawA), 0, 255);
+            if (!std::isfinite(rawA))
+                throwInvalidParams(
+                        QStringLiteral("graph.add_error_band: 'alpha' must be a finite number."));
+            // Clamp in double before converting: int(1e10) was undefined behaviour and could land
+            // on the wrong end of the range.
+            a255 = (rawA <= 1.0 && rawA >= 0.0)
+                    ? int(std::round(rawA * 255.0))
+                    : int(std::round(std::clamp(rawA, 0.0, 255.0)));
         }
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Error Band"));
         const int added = ExtraPlotTypes::addErrorBand(g, master->title().text(), errT, errPlus,

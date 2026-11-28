@@ -3502,6 +3502,7 @@ static QStringList suite71SvgFontSizes(const QString &path)
     return sizes;
 }
 
+#ifdef Q_OS_WIN
 // lfHeight of every font the EMF creates (EMR_EXTCREATEFONTINDIRECTW = 82), sorted.
 static QList<int> suite71EmfFontHeights(const QByteArray &emf)
 {
@@ -3523,6 +3524,7 @@ static QList<int> suite71EmfFontHeights(const QByteArray &emf)
     std::sort(h.begin(), h.end());
     return h;
 }
+#endif
 
 int runSuite71LabSlideTextAndZoomFollowsText(ApplicationWindow *mw)
 {
@@ -3615,9 +3617,13 @@ int runSuite71LabSlideTextAndZoomFollowsText(ApplicationWindow *mw)
     CHECK_COND(!svgSizes1.isEmpty(), "71c: SVG at 100 % has no font sizes");
     CHECK_COND(!img1.isNull(), "71c: PNG at 100 % missing");
     // PowerPoint / clipboard paths: the OLE metafile and the page image.
-    const OleRenderedGraph emf1 = SciDAVisEmf::renderMultiLayer(ml);
     const QImage page1 = ml->copyPageAsImage(300);
+#ifdef Q_OS_WIN
+    const OleRenderedGraph emf1 = SciDAVisEmf::renderMultiLayer(ml);
     CHECK_COND(!emf1.emfBytes.isEmpty() && !page1.isNull(), "71c: EMF / page image at 100 % missing");
+#else
+    CHECK_COND(!page1.isNull(), "71c: page image at 100 % missing");
+#endif
 
     // ---- 71b: 200 % doubles the drawn text, the stored pt stay ----
     ml->setPageZoom(2.0);
@@ -3688,6 +3694,7 @@ int runSuite71LabSlideTextAndZoomFollowsText(ApplicationWindow *mw)
         CHECK_COND(frac < 0.01, "71c: PNG exported at 200 % differs from the 100 % export");
     }
 
+#ifdef Q_OS_WIN
     {
         const OleRenderedGraph emf2 = SciDAVisEmf::renderMultiLayer(ml);
         const QImage page2 = ml->copyPageAsImage(300);
@@ -3717,6 +3724,14 @@ int runSuite71LabSlideTextAndZoomFollowsText(ApplicationWindow *mw)
                            && std::fabs(base->axisTitle(QwtPlot::xBottom).font().pointSizeF() - 25.8) < 1e-6,
                    "71c: OLE / copy must leave the view at 200 %");
     }
+#else
+    {
+        // No OLE metafile off Windows: the copied page image must still not depend on the zoom.
+        const QImage page2 = ml->copyPageAsImage(300);
+        CHECK_COND(page2.convertToFormat(QImage::Format_ARGB32) == page1.convertToFormat(QImage::Format_ARGB32),
+                   "71c: copied page image at 200 % differs from 100 %");
+    }
+#endif
     // Layer exports (File > Export Layer), the layer copy and Copy Page at 100 % vs 200 %.
     {
         auto pngDiffFrac = [](const QImage &x, const QImage &y) -> double {

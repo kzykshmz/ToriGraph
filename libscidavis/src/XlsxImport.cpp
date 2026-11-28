@@ -1615,7 +1615,10 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
         if (mode == SciDAVis::ColumnMode::Numeric) {
             std::unique_ptr<QVector<qreal>> values(
                     new QVector<qreal>(nRows, std::numeric_limits<double>::quiet_NaN()));
-            IntervalAttribute<bool> invalid;
+            // Runs of empty cells, ascending and separated by valid cells: the attribute is
+            // built from them in one step (setValue() per run scanned all the runs so far, a
+            // time growing with the square of the rows for alternating blank cells).
+            QList<Interval<int>> invalidRuns;
             int runStart = -1;
             for (int i = 0; i < nRows; ++i) {
                 double v = 0.0;
@@ -1624,7 +1627,7 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
                 if (ok) {
                     (*values)[i] = v;
                     if (runStart >= 0) {
-                        invalid.setValue(Interval<int>(runStart, i - 1), true);
+                        invalidRuns.append(Interval<int>(runStart, i - 1));
                         runStart = -1;
                     }
                 } else if (runStart < 0) {
@@ -1632,8 +1635,8 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
                 }
             }
             if (runStart >= 0 && nRows > 0)
-                invalid.setValue(Interval<int>(runStart, nRows - 1), true);
-            col = new Column(shortName, std::move(values), invalid);
+                invalidRuns.append(Interval<int>(runStart, nRows - 1));
+            col = new Column(shortName, std::move(values), IntervalAttribute<bool>(invalidRuns));
             if (auto *d2s = qobject_cast<Double2StringFilter *>(col->outputFilter())) {
                 d2s->setNumericFormat('g');
                 d2s->setNumDigits(6);
@@ -1641,20 +1644,28 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
             ++layout.numericColumns;
         } else if (mode == SciDAVis::ColumnMode::DateTime) {
             std::unique_ptr<QList<QDateTime>> values(new QList<QDateTime>());
-            IntervalAttribute<bool> invalid;
+            values->reserve(nRows);
+            // empty rows as ascending runs, made into the attribute in one step (see above)
+            QList<Interval<int>> invalidRuns;
+            auto markInvalid = [&invalidRuns](int row) {
+                if (!invalidRuns.isEmpty() && invalidRuns.last().end() == row - 1)
+                    invalidRuns.last().setEnd(row);
+                else
+                    invalidRuns.append(Interval<int>(row, row));
+            };
             for (int i = 0; i < nRows; ++i) {
                 const Cell &cell = cellAt(sheet, dataStart + i, c);
                 if (cell.type == Cell::Number && cell.isDate) {
                     const QDateTime dt = serialToDateTime(cell.number, date1904);
                     values->append(dt);
                     if (!dt.isValid())
-                        invalid.setValue(Interval<int>(i, i), true);
+                        markInvalid(i);
                 } else {
                     values->append(QDateTime());
-                    invalid.setValue(Interval<int>(i, i), true);
+                    markInvalid(i);
                 }
             }
-            col = new Column(shortName, std::move(values), invalid);
+            col = new Column(shortName, std::move(values), IntervalAttribute<bool>(invalidRuns));
             QString fmt;
             if (datePart && timePart)
                 fmt = QStringLiteral("yyyy-MM-dd hh:mm:ss");

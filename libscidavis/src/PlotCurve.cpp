@@ -390,6 +390,16 @@ bool DataCurve::loadData()
         return false;
     }
 
+    if (d_held_empty) {
+        // held by Graph::updateCurvesData(): convertData() would turn the axis into a text /
+        // time axis, so stay empty until the column is numeric again (e.g. its type change undone)
+        if (columnShownOffAxis(x_col_ptr, true) || columnShownOffAxis(y_col_ptr, false)) {
+            setEmptyData();
+            return true;
+        }
+        d_held_empty = false;
+    }
+
     QList<QVector<double>> points = convertData(
             d_type == Graph::HorizontalBars ? (QList<Column *>() << y_col_ptr << x_col_ptr)
                                             : (QList<Column *>() << x_col_ptr << y_col_ptr),
@@ -401,15 +411,7 @@ bool DataCurve::loadData()
         // 記録されないので、データを Undo / Redo で戻しても曲線は戻らなかった。データが戻れば
         // updateData() からここへ来て、そのまま描き直される。新しく作図するときに空の列を
         // 断るのは Graph::insertCurve() の役目（列そのものが無いときだけ上で外す）。
-        d_applied_dx = 0.0;
-        d_applied_dy = 0.0;
-        if (d_norm01)
-            d_raw_y_backup.clear();
-        setData(QwtArray<double>(), QwtArray<double>());
-        d_index_to_row.clear();
-        d_gap_before_indices.clear();
-        foreach (DataCurve *c, d_error_bars)
-            c->loadData(); // 点が無い主曲線に合わせて空になる（誤差棒は消えない）
+        setEmptyData();
         return true;
     }
 
@@ -428,6 +430,56 @@ bool DataCurve::loadData()
     }
 
     return true;
+}
+
+void DataCurve::setEmptyData()
+{
+    d_applied_dx = 0.0;
+    d_applied_dy = 0.0;
+    if (d_norm01)
+        d_raw_y_backup.clear();
+    setData(QwtArray<double>(), QwtArray<double>());
+    d_index_to_row.clear();
+    d_gap_before_indices.clear();
+    foreach (DataCurve *c, d_error_bars)
+        c->loadData(); // 点が無い主曲線に合わせて空になる（誤差棒は消えない）
+}
+
+void DataCurve::holdEmpty()
+{
+    d_held_empty = true;
+    setEmptyData();
+}
+
+bool DataCurve::columnShownOffAxis(const Column *col, bool isXColumn) const
+{
+    if (!col || !plot())
+        return false;
+    Graph *g = static_cast<Graph *>(plot()->parent());
+    if (!g)
+        return false;
+    const QList<Graph::AxisType> types = g->axesType();
+    const int cx = (xAxis() >= 0 && xAxis() < QwtPlot::axisCnt && xAxis() < types.size())
+            ? xAxis()
+            : QwtPlot::xBottom;
+    const int cy = (yAxis() >= 0 && yAxis() < QwtPlot::axisCnt && yAxis() < types.size())
+            ? yAxis()
+            : QwtPlot::yLeft;
+    const bool hbars = (d_type == Graph::HorizontalBars);
+    const int ax = (isXColumn != hbars) ? cx : cy;
+    if (ax < 0 || ax >= types.size())
+        return false;
+    const Graph::AxisType atype = types.at(ax);
+    // compare the setLabels*Format() calls in convertData()
+    switch (col->columnMode()) {
+    case SciDAVis::ColumnMode::Text:
+        return atype != Graph::AxisType::Txt;
+    case SciDAVis::ColumnMode::DateTime:
+        return atype != Graph::AxisType::Time && atype != Graph::AxisType::Date
+                && atype != Graph::AxisType::DateTime;
+    default:
+        return false;
+    }
 }
 
 void DataCurve::removeErrorBars(DataCurve *c)
@@ -647,48 +699,57 @@ void DataCurve::clearMasks()
     Column *yCol = nullptr;
     resolveColumns(xCol, yCol);
 
-    const bool hasYMasks = (yCol && !yCol->maskedIntervals().isEmpty());
-    QVector<int> xRowsToUnmask;
-    if (xCol && xCol != yCol && !xCol->maskedIntervals().isEmpty()) {
+    // Only the rows this curve plots: another curve may share the Y (or X) column with a
+    // different row range / X column, and its masks are not this curve's to clear.
+    auto maskedRowsOfCurve = [this](Column *col) -> QVector<int> {
+        QVector<int> rows;
+        if (!col || col->maskedIntervals().isEmpty())
+            return rows;
         const int n = dataSize();
-        xRowsToUnmask.reserve(n);
+        rows.reserve(n);
         for (int i = 0; i < n; ++i) {
             const int row = tableRow(i);
-            if (row >= 0 && xCol->isMasked(row))
-                xRowsToUnmask.append(row);
+            if (row >= 0 && col->isMasked(row))
+                rows.append(row);
         }
-        std::sort(xRowsToUnmask.begin(), xRowsToUnmask.end());
-        xRowsToUnmask.erase(std::unique(xRowsToUnmask.begin(), xRowsToUnmask.end()),
-                            xRowsToUnmask.end());
-    }
+        std::sort(rows.begin(), rows.end());
+        rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+        return rows;
+    };
+    auto unmaskRows = [](Column *col, const QVector<int> &rows) {
+        if (!col || rows.isEmpty())
+            return;
+        int runStart = rows.first();
+        int runEnd = runStart;
+        for (int idx = 1; idx < rows.size(); ++idx) {
+            const int r = rows.at(idx);
+            if (r == runEnd + 1) {
+                runEnd = r;
+            } else {
+                col->setMasked(Interval<int>(runStart, runEnd), false);
+                runStart = r;
+                runEnd = r;
+            }
+        }
+        col->setMasked(Interval<int>(runStart, runEnd), false);
+    };
 
-    if (!hasYMasks && xRowsToUnmask.isEmpty())
+    const QVector<int> yRowsToUnmask = maskedRowsOfCurve(yCol);
+    const QVector<int> xRowsToUnmask =
+            (xCol && xCol != yCol) ? maskedRowsOfCurve(xCol) : QVector<int>();
+
+    if (yRowsToUnmask.isEmpty() && xRowsToUnmask.isEmpty())
         return;
 
     future::Table *ft = d_table->d_future_table;
     if (ft)
         ft->beginMacro(QObject::tr("Clear Curve Masks"));
-    if (hasYMasks)
-        yCol->clearMasks();
-    if (!xRowsToUnmask.isEmpty()) {
-        int runStart = xRowsToUnmask.first();
-        int runEnd = runStart;
-        for (int idx = 1; idx < xRowsToUnmask.size(); ++idx) {
-            const int r = xRowsToUnmask.at(idx);
-            if (r == runEnd + 1) {
-                runEnd = r;
-            } else {
-                xCol->setMasked(Interval<int>(runStart, runEnd), false);
-                runStart = r;
-                runEnd = r;
-            }
-        }
-        xCol->setMasked(Interval<int>(runStart, runEnd), false);
-    }
+    unmaskRows(yCol, yRowsToUnmask);
+    unmaskRows(xCol, xRowsToUnmask);
     if (ft)
         ft->endMacro();
 
-    if (hasYMasks)
+    if (!yRowsToUnmask.isEmpty())
         emit d_table->modifiedData(d_table, title().text());
     if (!xRowsToUnmask.isEmpty() && !d_x_column.isEmpty() && d_x_column != title().text())
         emit d_table->modifiedData(d_table, d_x_column);

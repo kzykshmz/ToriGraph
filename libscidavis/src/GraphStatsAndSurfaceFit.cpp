@@ -84,6 +84,46 @@ namespace {
 constexpr double kPi = 3.14159265358979323846264338327950288;
 constexpr double kFwhmFactor = 2.3548200450309493820231386529194; // 2 * sqrt(2 * ln(2))
 
+// "Equal up to floating-point rounding" must be judged relative to the size of the data, not by
+// an absolute 1e-15 / 1e-30: currents in fA, times in fs or capacitances in F are perfectly
+// ordinary data and used to come out as all-tied / zero-variance (p = 1, W = 0, F = 0). At scale 1
+// kRelTol (~1.4e-14) is the same size as the old absolute thresholds, so O(1) data are unaffected.
+constexpr double kRelTol = 64.0 * std::numeric_limits<double>::epsilon();
+inline double relTol(double scale)
+{
+    return kRelTol * std::fabs(scale);
+}
+// Rounding floor of a sum of squared deviations of values whose raw sum of squares is sumSqRaw:
+// each deviation carries an error of about kRelTol * |x_i|.
+inline double ssRoundoffFloor(double sumSqRaw)
+{
+    return kRelTol * kRelTol * std::fabs(sumSqRaw);
+}
+double maxAbsOf(const std::vector<double> &v)
+{
+    double m = 0.0;
+    for (double x : v)
+        if (std::isfinite(x))
+            m = std::max(m, std::fabs(x));
+    return m;
+}
+double sumOfSquares(const std::vector<double> &v)
+{
+    double s = 0.0;
+    for (double x : v)
+        s += x * x;
+    return s;
+}
+// True when sorted data are constant up to rounding (range within rounding of their magnitude).
+bool isEffectivelyConstantSorted(const std::vector<double> &sorted)
+{
+    if (sorted.empty())
+        return true;
+    const double lo = sorted.front();
+    const double hi = sorted.back();
+    return !((hi - lo) > relTol(std::max(std::fabs(lo), std::fabs(hi))));
+}
+
 bool isNonInteractiveApp(const ApplicationWindow *app)
 {
     if (qApp && qApp->property("torigraph_noninteractive").toBool())
@@ -1590,7 +1630,7 @@ void computeShapiroWilkRoyston(const std::vector<double> &sortedX, double ss,
                                double &wOut, double &pOut)
 {
     const int nFull = static_cast<int>(sortedX.size());
-    if (nFull < 3 || ss <= 1e-30) {
+    if (nFull < 3 || !(ss > 0.0) || isEffectivelyConstantSorted(sortedX)) {
         wOut = 0.0;
         pOut = 0.0;
         return;
@@ -1620,7 +1660,7 @@ void computeShapiroWilkRoyston(const std::vector<double> &sortedX, double ss,
             const double d = v - mSub;
             ssUse += d * d;
         }
-        if (ssUse <= 1e-30) {
+        if (!(ssUse > 0.0) || isEffectivelyConstantSorted(x)) {
             wOut = 0.0;
             pOut = 0.0;
             return;
@@ -2725,15 +2765,26 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
     const double msWithin = (df2 > 0.0) ? (ssWithin / df2) : 0.0;
     double fStat = 0.0;
     double pAnova = 1.0;
-    if (msWithin > 1e-30) {
+    // "Zero" sums of squares are judged against the rounding floor of the data, not 1e-30
+    // (1e-16-scale groups have every sum of squares below 1e-30).
+    double sumSqRaw = 0.0;
+    for (const GroupData &g : groups)
+        sumSqRaw += sumOfSquares(g.vals);
+    const double ssZero = ssRoundoffFloor(sumSqRaw);
+    if (msWithin > 0.0 && ssWithin > ssZero) {
         fStat = msBetween / msWithin;
         pAnova = (fStat > 0.0 && df2 > 0.0) ? gsl_cdf_fdist_Q(fStat, df1, df2) : 1.0;
-    } else if (ssBetween > 1e-30) {
+    } else if (ssBetween > ssZero) {
         fStat = 1e12;
         pAnova = 0.0;
     }
     const double etaSq =
-            (ssBetween + ssWithin > 1e-30) ? (ssBetween / (ssBetween + ssWithin)) : 0.0;
+            (ssBetween + ssWithin > ssZero && ssBetween + ssWithin > 0.0)
+            ? (ssBetween / (ssBetween + ssWithin))
+            : 0.0;
+    // Per-observation rounding floors of a variance and of a mean difference (scale-relative).
+    const double varZero = ssZero / static_cast<double>(totalN);
+    const double meanZero = std::sqrt(varZero);
 
     // Post-hoc pairwise / vs-control comparisons
     struct PairResult
@@ -2818,11 +2869,11 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
             pr.meanDiff = gi.mean - gCtrl.mean;
             pr.dfNum = static_cast<double>(K - 1);
             pr.dfDen = df2;
-            if (sePooled > 1e-30 && df2 > 0.0) {
+            if (sePooled > 0.0 && msWithin > varZero && df2 > 0.0) {
                 pr.statVal = pr.meanDiff / sePooled;
                 pr.pRaw = std::clamp(2.0 * gsl_cdf_tdist_Q(std::abs(pr.statVal), df2), 0.0, 1.0);
                 pr.pAdj = dunnettTwoSidedUpperP(std::abs(pr.statVal), df2, treatSizes, nCtrl);
-            } else if (std::abs(pr.meanDiff) > 1e-30) {
+            } else if (std::abs(pr.meanDiff) > meanZero) {
                 pr.statVal = (pr.meanDiff > 0.0) ? 1e6 : -1e6;
                 pr.pRaw = 0.0;
                 pr.pAdj = 0.0;
@@ -2863,12 +2914,12 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
                     const double seQ = std::sqrt(0.5 * msWithin * (1.0 / ni + 1.0 / nj));
                     pr.dfNum = static_cast<double>(K);
                     pr.dfDen = df2;
-                    if (seQ > 1e-30 && df2 > 0.0) {
+                    if (seQ > 0.0 && msWithin > varZero && df2 > 0.0) {
                         pr.statVal = std::abs(pr.meanDiff) / seQ;
                         const double tPooled = pr.statVal / std::sqrt(2.0);
                         pr.pRaw = std::clamp(2.0 * gsl_cdf_tdist_Q(tPooled, df2), 0.0, 1.0);
                         pr.pAdj = studentizedRangeUpperP(pr.statVal, K, df2);
-                    } else if (std::abs(pr.meanDiff) > 1e-30) {
+                    } else if (std::abs(pr.meanDiff) > meanZero) {
                         pr.statVal = 1e6;
                         pr.pRaw = 0.0;
                         pr.pAdj = 0.0;
@@ -2876,16 +2927,16 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
                 } else if (posthocMode == PostHocMode::GamesHowell) {
                     const double denom = welchDenom;
                     const double dfWelch =
-                            (denom > 1e-30) ? ((vSum * vSum) / denom) : (ni + nj - 2.0);
+                            (denom > 0.0) ? ((vSum * vSum) / denom) : (ni + nj - 2.0);
                     pr.dfNum = static_cast<double>(K);
                     pr.dfDen = dfWelch;
-                    if (vSum > 1e-30 && dfWelch > 0.0) {
+                    if (vSum > varZero * (1.0 / ni + 1.0 / nj) && dfWelch > 0.0) {
                         const double seQ = std::sqrt(0.5 * vSum);
                         pr.statVal = std::abs(pr.meanDiff) / seQ;
                         const double tWelch = std::abs(pr.meanDiff) / std::sqrt(vSum);
                         pr.pRaw = std::clamp(2.0 * gsl_cdf_tdist_Q(tWelch, dfWelch), 0.0, 1.0);
                         pr.pAdj = studentizedRangeUpperP(pr.statVal, K, dfWelch);
-                    } else if (std::abs(pr.meanDiff) > 1e-30) {
+                    } else if (std::abs(pr.meanDiff) > meanZero) {
                         pr.statVal = 1e6;
                         pr.pRaw = 0.0;
                         pr.pAdj = 0.0;
@@ -2893,13 +2944,13 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
                 } else {
                     // Default: Welch t-test + Holm-Bonferroni step-down adjustment
                     pr.dfDen = df2;
-                    if (vSum > 1e-30) {
+                    if (vSum > varZero * (1.0 / ni + 1.0 / nj)) {
                         pr.statVal = pr.meanDiff / std::sqrt(vSum);
                         const double denom = welchDenom;
-                        pr.dfNum = (denom > 1e-30) ? ((vSum * vSum) / denom) : (ni + nj - 2.0);
+                        pr.dfNum = (denom > 0.0) ? ((vSum * vSum) / denom) : (ni + nj - 2.0);
                         pr.pRaw = std::clamp(2.0 * gsl_cdf_tdist_Q(std::abs(pr.statVal), pr.dfNum),
                                              0.0, 1.0);
-                    } else if (std::abs(pr.meanDiff) > 1e-30) {
+                    } else if (std::abs(pr.meanDiff) > meanZero) {
                         pr.statVal = (pr.meanDiff > 0.0) ? 1e6 : -1e6;
                         pr.dfNum = ni + nj - 2.0;
                         pr.pRaw = 0.0;
@@ -4635,7 +4686,9 @@ GraphStatsAndSurfaceFit::runNormalityTest(ApplicationWindow *app, Table *srcTabl
     res.mean = mean;
     res.sd = sd;
 
-    if (sd <= 1e-30) {
+    // Constant data (up to rounding of their magnitude): the sd of exactly-constant data comes
+    // out as rounding residue (~1e-14 * |x|), not 0, and used to slip past `sd <= 1e-30`.
+    if (!(sd > 0.0) || isEffectivelyConstantSorted(vals)) {
         res.shapiroWilkW = 0.0;
         res.shapiroWilkP = 0.0;
         res.ksD = 1.0;
@@ -5113,11 +5166,13 @@ GraphStatsAndSurfaceFit::runTwoWayANOVA(ApplicationWindow *app, Table *srcTable,
     const double msAB = ssAB / dfAB;
     const double msE = rssFull / dfE;
 
+    // Zero tests relative to the rounding floor of the data (1e-16-scale data used to give F = 0).
+    const double ssZero = ssRoundoffFloor(sumOfSquares(yVec));
     auto evalFAndP = [&](double msEff, double dfEff, double &fOut, double &pOut) {
-        if (msE > 1e-30) {
+        if (msE > 0.0 && rssFull > ssZero) {
             fOut = msEff / msE;
             pOut = (fOut > 0.0) ? std::clamp(gsl_cdf_fdist_Q(fOut, dfEff, dfE), 0.0, 1.0) : 1.0;
-        } else if (msEff > 1e-30) {
+        } else if (msEff * dfEff > ssZero) {
             fOut = 1e12;
             pOut = 0.0;
         } else {
@@ -5661,10 +5716,13 @@ void computeMidRanksWithTies(const std::vector<double> &vals, std::vector<double
     std::sort(order.begin(), order.end(),
               [&](size_t a, size_t b) { return vals[a] < vals[b]; });
 
+    // Ties: neighbours equal up to rounding relative to the data scale (an absolute 1e-14 tied
+    // every fA / fs-scale value together and made Mann-Whitney / Kruskal-Wallis return p = 1).
+    const double tieTol = relTol(maxAbsOf(vals));
     size_t i = 0;
     while (i < n) {
         size_t j = i + 1;
-        while (j < n && std::fabs(vals[order[j]] - vals[order[i]]) <= 1e-14 * std::max(1.0, std::fabs(vals[order[i]])))
+        while (j < n && std::fabs(vals[order[j]] - vals[order[j - 1]]) <= tieTol)
             ++j;
         const double avgRank = 0.5 * (static_cast<double>(i + 1) + static_cast<double>(j));
         for (size_t k = i; k < j; ++k)
@@ -6185,14 +6243,18 @@ void evalDixonQCritAndP(int n, double qObs, double alpha, double &qCritOut, doub
     }
 }
 
-void evalWilcoxonSignedRank(const std::vector<double> &diffs, double &wStatOut, double &pValOut)
+// dataScale: magnitude of the paired values the differences came from (0 = use the differences),
+// so that rounding residue of x - y counts as a zero difference at any unit scale.
+void evalWilcoxonSignedRank(const std::vector<double> &diffs, double &wStatOut, double &pValOut,
+                            double dataScale = 0.0)
 {
     std::vector<double> absD;
     std::vector<int> signs;
     absD.reserve(diffs.size());
     signs.reserve(diffs.size());
+    const double zeroTol = relTol(std::max(std::fabs(dataScale), maxAbsOf(diffs)));
     for (double d : diffs) {
-        if (std::isfinite(d) && std::fabs(d) > 1e-15) {
+        if (std::isfinite(d) && std::fabs(d) > zeroTol) {
             absD.push_back(std::fabs(d));
             signs.push_back(d > 0.0 ? 1 : -1);
         }
@@ -7371,7 +7433,7 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
         }
 
         double wStat = 0.0, pVal = 1.0;
-        evalWilcoxonSignedRank(diffs, wStat, pVal);
+        evalWilcoxonSignedRank(diffs, wStat, pVal, maxAbsOf(allVals));
         res.valid = true;
         res.chosenTestName = QStringLiteral("Wilcoxon Signed-Rank");
         res.statistic = wStat;
@@ -7524,6 +7586,12 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
             const double df2 = static_cast<double>(totalN - static_cast<size_t>(K));
             const double msBetween = ssBetween / df1;
             const double msWithin = (df2 > 0.0) ? (ssWithin / df2) : 0.0;
+            // Zero tests relative to the rounding floor of the data, not 1e-30.
+            double sumSqRaw = 0.0;
+            for (const GroupSample &gs : groups)
+                sumSqRaw += sumOfSquares(gs.vals);
+            const double ssZero = ssRoundoffFloor(sumSqRaw);
+            const double varZero = ssZero / static_cast<double>(totalN);
 
             if (K == 2) {
                 const double n0 = static_cast<double>(groups[0].vals.size());
@@ -7532,12 +7600,12 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
                 const double v1 = groups[1].var / n1;
                 const double vSum = v0 + v1;
                 double tStat = 0.0, pWelch = 1.0, dfW = n0 + n1 - 2.0;
-                if (vSum > 1e-30) {
+                if (vSum > 0.0 && vSum > varZero * (1.0 / n0 + 1.0 / n1)) {
                     tStat = (groups[0].mean - groups[1].mean) / std::sqrt(vSum);
                     const double den = (v0 * v0) / (n0 - 1.0) + (v1 * v1) / (n1 - 1.0);
-                    dfW = (den > 1e-30) ? ((vSum * vSum) / den) : (n0 + n1 - 2.0);
+                    dfW = (den > 0.0) ? ((vSum * vSum) / den) : (n0 + n1 - 2.0);
                     pWelch = std::clamp(2.0 * gsl_cdf_tdist_Q(std::fabs(tStat), dfW), 0.0, 1.0);
-                } else if (std::fabs(groups[0].mean - groups[1].mean) > 1e-30) {
+                } else if (std::fabs(groups[0].mean - groups[1].mean) > std::sqrt(varZero)) {
                     tStat = (groups[0].mean > groups[1].mean) ? 1e6 : -1e6;
                     pWelch = 0.0;
                 }
@@ -7589,10 +7657,10 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
                 return res;
             } else {
                 double fStat = 0.0, pAnova = 1.0;
-                if (msWithin > 1e-30) {
+                if (msWithin > 0.0 && ssWithin > ssZero) {
                     fStat = msBetween / msWithin;
                     pAnova = (fStat > 0.0 && df2 > 0.0) ? gsl_cdf_fdist_Q(fStat, df1, df2) : 1.0;
-                } else if (ssBetween > 1e-30) {
+                } else if (ssBetween > ssZero) {
                     fStat = 1e12;
                     pAnova = 0.0;
                 }
@@ -7905,7 +7973,7 @@ MultiLayer *GraphStatsAndSurfaceFit::plotPairedComparison(
     double pVal = 1.0;
     double testStat = 0.0;
     if (useWilcoxon) {
-        evalWilcoxonSignedRank(diffs, testStat, pVal);
+        evalWilcoxonSignedRank(diffs, testStat, pVal, std::max(maxAbsOf(bef), maxAbsOf(aft)));
     } else {
         const double meanD = std::accumulate(diffs.begin(), diffs.end(), 0.0) / static_cast<double>(m);
         double ssD = 0.0;
@@ -8112,7 +8180,8 @@ MultiLayer *GraphStatsAndSurfaceFit::plotCorrelationMatrixHeatmap(
                     sjj += dj * dj;
                     sij += di * dj;
                 }
-                if (sii > 1e-30 && sjj > 1e-30) {
+                if (sii > 0.0 && sjj > 0.0 && sii > ssRoundoffFloor(sumOfSquares(xi))
+                    && sjj > ssRoundoffFloor(sumOfSquares(xj))) {
                     rVal = std::clamp(sij / std::sqrt(sii * sjj), -1.0, 1.0);
                     if (xi.size() > 2) {
                         const double oneMinusR2 = std::max(0.0, 1.0 - rVal * rVal);
@@ -8305,7 +8374,13 @@ GraphStatsAndSurfaceFit::KMeansResult GraphStatsAndSurfaceFit::runKMeansClusteri
             ss += dev * dev;
         }
         const double sd = std::sqrt(ss / static_cast<double>(N - 1));
-        featSd[static_cast<size_t>(d)] = (sd > 1e-15) ? sd : 1.0;
+        double featMaxAbs = 0.0;
+        for (int i = 0; i < N; ++i)
+            featMaxAbs = std::max(featMaxAbs,
+                                  std::fabs(rawX[static_cast<size_t>(i)][static_cast<size_t>(d)]));
+        // Constant feature only if sd is rounding relative to its magnitude (fA-scale features
+        // used to be left unstandardized and ignored by the distance).
+        featSd[static_cast<size_t>(d)] = (sd > 0.0 && sd > relTol(featMaxAbs)) ? sd : 1.0;
     }
 
     std::vector<std::vector<double>> Z(static_cast<size_t>(N),
@@ -8764,7 +8839,11 @@ MultiLayer *GraphStatsAndSurfaceFit::plotHierarchicalDendrogram(
             ss += dev * dev;
         }
         const double sd = std::sqrt(ss / static_cast<double>(N - 1));
-        sdF[static_cast<size_t>(d)] = (sd > 1e-15) ? sd : 1.0;
+        double featMaxAbs = 0.0;
+        for (int i = 0; i < N; ++i)
+            featMaxAbs = std::max(featMaxAbs,
+                                  std::fabs(rawX[static_cast<size_t>(i)][static_cast<size_t>(d)]));
+        sdF[static_cast<size_t>(d)] = (sd > 0.0 && sd > relTol(featMaxAbs)) ? sd : 1.0;
     }
 
     const int effLinkage = std::clamp(linkage, 0, 2);
@@ -9026,6 +9105,15 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
     const double nanVal = std::numeric_limits<double>::quiet_NaN();
     const double infVal = std::numeric_limits<double>::infinity();
 
+    // Identical / vertical pairs: differences within rounding of the data magnitude (an absolute
+    // 1e-15 made every pair of fA-scale data "identical" or "vertical").
+    double pbMaxAbsX = 0.0, pbMaxAbsY = 0.0;
+    for (const auto &pt : pts) {
+        pbMaxAbsX = std::max(pbMaxAbsX, std::fabs(pt.first));
+        pbMaxAbsY = std::max(pbMaxAbsY, std::fabs(pt.second));
+    }
+    const double pbTolX = relTol(pbMaxAbsX);
+    const double pbTolY = relTol(pbMaxAbsY);
     std::vector<double> slopes;
     slopes.reserve(static_cast<size_t>(n) * static_cast<size_t>(n - 1) / 2);
     int kLessMinusOne = 0;
@@ -9034,10 +9122,10 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
             const double dx = pts[static_cast<size_t>(j)].first - pts[static_cast<size_t>(i)].first;
             const double dy =
                     pts[static_cast<size_t>(j)].second - pts[static_cast<size_t>(i)].second;
-            if (std::fabs(dx) <= 1e-15 && std::fabs(dy) <= 1e-15)
+            if (std::fabs(dx) <= pbTolX && std::fabs(dy) <= pbTolY)
                 continue; // identical pair omitted per Passing & Bablok (1983)
             double s = 0.0;
-            if (std::fabs(dx) <= 1e-15) {
+            if (std::fabs(dx) <= pbTolX) {
                 s = infVal; // vertical pairs are +inf per Passing & Bablok (1983/1988)
             } else {
                 s = dy / dx;
@@ -9114,6 +9202,9 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
     if (pbHasFiniteLine) {
         std::vector<CusumItem> cusumItems(static_cast<size_t>(n));
         int nPos = 0, nNeg = 0;
+        // A residual is "on the line" within rounding of y's magnitude, not within 1e-14.
+        const double resTol =
+                relTol(pbMaxAbsY + std::fabs(pbIntercept) + std::fabs(pbSlope) * pbMaxAbsX);
         for (int i = 0; i < n; ++i) {
             const double xi = pts[static_cast<size_t>(i)].first;
             const double yi = pts[static_cast<size_t>(i)].second;
@@ -9122,9 +9213,9 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
                     ? ((yi + xi / std::max(1e-12, pbSlope) - pbIntercept) / 2.0)
                     : (xi + pbSlope * (yi - pbIntercept));
             cusumItems[static_cast<size_t>(i)] = { di, ri };
-            if (ri > 1e-14)
+            if (ri > resTol)
                 ++nPos;
-            else if (ri < -1e-14)
+            else if (ri < -resTol)
                 ++nNeg;
         }
         std::stable_sort(cusumItems.begin(), cusumItems.end(),
@@ -9138,9 +9229,9 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
             double running = 0.0;
             double maxAbsCum = 0.0;
             for (const CusumItem &ci : cusumItems) {
-                if (ci.resid > 1e-14)
+                if (ci.resid > resTol)
                     running += wPos;
-                else if (ci.resid < -1e-14)
+                else if (ci.resid < -resTol)
                     running += wNeg;
                 maxAbsCum = std::max(maxAbsCum, std::fabs(running));
             }
@@ -9187,7 +9278,10 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
             syy += dy * dy;
             sxy += dx * dy;
         }
-        if (sxx <= 1e-30 && syy <= 1e-30)
+        // Degenerate (all points coincide) relative to the rounding floor of the data.
+        const double dCnt = static_cast<double>(cnt);
+        if (sxx <= dCnt * relTol(pbMaxAbsX) * relTol(pbMaxAbsX)
+            && syy <= dCnt * relTol(pbMaxAbsY) * relTol(pbMaxAbsY))
             return false;
         // Numerically stable rationalized Deming root for lambda = sigma_x^2 / sigma_y^2
         const double u = lambda * syy - sxx;
@@ -9195,12 +9289,12 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
         double beta = 0.0;
         if (u >= 0.0) {
             const double denom = 2.0 * lambda * sxy;
-            if (std::fabs(denom) <= 1e-30)
+            if (!(std::fabs(denom) > kRelTol * (u + rad)))
                 return false;
             beta = (u + rad) / denom;
         } else {
             const double denom = rad - u;
-            if (denom <= 1e-30)
+            if (!(denom > 0.0))
                 return false;
             beta = (2.0 * sxy) / denom;
         }

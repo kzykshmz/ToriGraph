@@ -1,0 +1,2 @@
+# keep the patch byte-exact (LF) on every platform; git apply needs it unmodified
+*.patch -text

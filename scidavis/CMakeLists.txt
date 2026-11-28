@@ -235,10 +235,16 @@ if( WIN32 )
     "src/ole_test_suites_113.cpp"
     "src/ole_test_suites_114.cpp"
     "src/ole_test_suites_115.cpp"
+    "src/ole_test_suites_116.cpp"
+    "src/ole_test_suites_117.cpp"
+    "src/ole_test_suites_118.cpp"
+    "src/ole_test_suites_119.cpp"
+    "src/ole_test_suites_120.cpp"
     "src/ole_test_common.h"
   )
   add_executable( scidavis_ole_test ${OLE_TEST_SRCS} "${RESOURCES}" )
   target_link_libraries( scidavis_ole_test libscidavis )
+  target_compile_definitions( scidavis_ole_test PRIVATE TORIGRAPH_SOURCE_DIR="${CMAKE_SOURCE_DIR}" )
   target_include_directories( scidavis_ole_test PRIVATE "${CMAKE_BINARY_DIR}/libscidavis/libscidavis_autogen/include" "${CMAKE_SOURCE_DIR}/libscidavis/src" )
   if( TORIGRAPH_ENABLE_PCH )
     target_precompile_headers( scidavis_ole_test PRIVATE
@@ -256,8 +262,8 @@ if( WIN32 )
     )
   endif()
 
-  # Register modular regression suites (36..115, note: 54 was never allocated) with CTest
-  foreach( _sid RANGE 36 115 )
+  # Register modular regression suites (36..120, note: 54 was never allocated) with CTest
+  foreach( _sid RANGE 36 120 )
     if( NOT _sid EQUAL 54 )
       add_test(
         NAME "ole_suite_${_sid}"
@@ -269,4 +275,35 @@ if( WIN32 )
       )
     endif()
   endforeach()
+endif()
+# Portable regression runner (Linux/macOS): the modular suites that need no OLE/EMF/Win32
+# clipboard (64-72, 79, 81-120). Build with -DTORIGRAPH_BUILD_PORTABLE_SUITES=ON, typically in a
+# GCC/Clang ASan+UBSan tree (scripts/dev.sh).
+if( NOT WIN32 )
+  option( TORIGRAPH_BUILD_PORTABLE_SUITES "Build scidavis_suite_test (portable regression suites)" OFF )
+  if( TORIGRAPH_BUILD_PORTABLE_SUITES )
+    set( PORTABLE_SUITE_SRCS
+      "src/suite_test_portable.cpp"
+      "src/ole_test_suites_64_72.cpp"
+      "src/ole_test_suites_79.cpp"
+    )
+    foreach( _sid RANGE 81 120 )
+      list( APPEND PORTABLE_SUITE_SRCS "src/ole_test_suites_${_sid}.cpp" )
+    endforeach()
+    add_executable( scidavis_suite_test ${PORTABLE_SUITE_SRCS} "${RESOURCES}" )
+    target_link_libraries( scidavis_suite_test libscidavis )
+    target_compile_definitions( scidavis_suite_test PRIVATE TORIGRAPH_SOURCE_DIR="${CMAKE_SOURCE_DIR}" )
+    target_include_directories( scidavis_suite_test PRIVATE
+      "${CMAKE_BINARY_DIR}/libscidavis/libscidavis_autogen/include"
+      "${CMAKE_SOURCE_DIR}/libscidavis/src" )
+    set( _portable_suites 64 65 66 67 68 69 70 71 72 79 )
+    foreach( _sid RANGE 81 120 )
+      list( APPEND _portable_suites ${_sid} )
+    endforeach()
+    foreach( _sid IN LISTS _portable_suites )
+      add_test( NAME "portable_suite_${_sid}" COMMAND scidavis_suite_test "--suite=${_sid}" )
+      set_tests_properties( "portable_suite_${_sid}" PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_OPENGL=software;TORIGRAPH_NO_OLE_REGISTER=1" )
+    endforeach()
+  endif()
 endif()

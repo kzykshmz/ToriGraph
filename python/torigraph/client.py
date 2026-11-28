@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import ipaddress
 import json
 import math
 import os
@@ -54,6 +55,17 @@ class ToriGraphDisconnectedError(TransportError):
 class BatchReadError(ToriGraphError):
     """A synchronous read (``get_*`` / ``info`` / ``to_dataframe`` ...) was attempted
     inside ``with app.batch():``, where calls are only recorded, not executed."""
+
+
+class BatchTokenScopeError(ToriGraphError, ValueError):
+    """A ``$steps[i]`` token recorded by one ``with app.batch():`` block was passed to a call
+    recorded by a different (typically nested) batch.
+
+    Each batch numbers its own steps from 0 and is sent on its own, so inside an inner batch
+    ``$steps[0]`` would silently resolve to the *inner* step 0, not the outer step that produced
+    the token. Use the value only inside its own batch, or read the real name after that
+    batch has run.
+    """
 
 
 class RpcError(ToriGraphError):
@@ -467,28 +479,68 @@ def _coerce_2d_matrix(data: Any) -> List[List[Optional[float]]]:
     return [[_to_cell(v) for v in row] for row in rows_list]
 
 
+class _BatchToken(str):
+    """A ``$steps[i]...`` string that remembers which :class:`BatchContext` recorded step ``i``.
+
+    It is an ordinary ``str`` for comparison, formatting and JSON; the owner is only used to
+    refuse the token in a call recorded by a *different* batch (see
+    :class:`BatchTokenScopeError`).
+    """
+
+    __slots__ = ("_owner_ref",)
+
+    def __new__(cls, text: str, owner: Optional["BatchContext"] = None) -> "_BatchToken":
+        obj = super().__new__(cls, text)
+        obj._owner_ref = weakref.ref(owner) if owner is not None else None
+        return obj
+
+    def _owner(self) -> Optional["BatchContext"]:
+        return self._owner_ref() if self._owner_ref is not None else None
+
+    # immutable like str: copies keep the owner, pickling gives a plain str
+    def __copy__(self) -> "_BatchToken":
+        return self
+
+    def __deepcopy__(self, memo: Any) -> "_BatchToken":
+        return self
+
+    def __reduce__(self) -> Any:
+        return (str, (str(self),))
+
+
+def _keep_token_str(value: Any) -> str:
+    """``str(value)``, except that a :class:`_BatchToken` keeps its recording batch."""
+    return value if isinstance(value, _BatchToken) else str(value)
+
+
 class BatchStepRef:
     """Lazy pipeline reference token resolving to ``$steps[i].<field>`` inside ``app.batch``."""
 
-    def __init__(self, step_index: int, path: str = "") -> None:
+    def __init__(self, step_index: int, path: str = "", _owner: Optional["BatchContext"] = None) -> None:
         self._idx = int(step_index)
         self._path = str(path)
+        self._owner_ref = weakref.ref(_owner) if _owner is not None else None
+
+    def _owner(self) -> Optional["BatchContext"]:
+        return self._owner_ref() if self._owner_ref is not None else None
 
     def __getattr__(self, attr: str) -> "BatchStepRef":
         if attr.startswith("_"):
             raise AttributeError(attr)
         sub = f"{self._path}.{attr}" if self._path else attr
-        return BatchStepRef(self._idx, sub)
+        return BatchStepRef(self._idx, sub, self._owner())
 
     def __getitem__(self, key: Union[int, str]) -> "BatchStepRef":
         if isinstance(key, int):
             sub = f"{self._path}[{key}]"
         else:
             sub = f"{self._path}.{key}" if self._path else str(key)
-        return BatchStepRef(self._idx, sub)
+        return BatchStepRef(self._idx, sub, self._owner())
 
     def to_token(self) -> str:
-        return f"$steps[{self._idx}].{self._path}" if self._path else f"$steps[{self._idx}]"
+        text = f"$steps[{self._idx}].{self._path}" if self._path else f"$steps[{self._idx}]"
+        # a ref made by BatchContext.add() carries its batch; a hand-made BatchStepRef(i) does not
+        return _BatchToken(text, self._owner()) if self._owner_ref is not None else text
 
     def __str__(self) -> str:
         return self.to_token()
@@ -541,25 +593,36 @@ def _is_read_only_rpc(method: str) -> bool:
 class _BatchRecordedResult(dict):
     """Placeholder result dict returned by ``Session.call`` while recording inside ``with app.batch():``."""
 
-    def __init__(self, step_index: int, method: str, params: Mapping[str, Any]) -> None:
-        name_token = f"$steps[{step_index}].name"
-        super().__init__(ok=True, name=name_token, _batch_step=step_index, _method=method)
+    def __init__(
+        self,
+        step_index: int,
+        method: str,
+        params: Mapping[str, Any],
+        owner: Optional["BatchContext"] = None,
+    ) -> None:
+        self._owner_ref = weakref.ref(owner) if owner is not None else None
         self._step_index = int(step_index)
+        name_token = self._token("name")
+        super().__init__(ok=True, name=name_token, _batch_step=step_index, _method=method)
         self._method = str(method)
         self._params = dict(params)
         if method.startswith("plot.") or method.startswith("graph."):
             super().__setitem__("graph", name_token)
 
+    def _token(self, key: str) -> str:
+        owner = self._owner_ref() if self._owner_ref is not None else None
+        return _BatchToken(f"$steps[{self._step_index}].{key}", owner)
+
     def __getitem__(self, key: str) -> Any:
         if dict.__contains__(self, key):
             return dict.__getitem__(self, key)
-        return f"$steps[{self._step_index}].{key}"
+        return self._token(key)
 
     def get(self, key: str, default: Any = None) -> Any:
         if dict.__contains__(self, key):
             return dict.__getitem__(self, key)
         if key in ("name", "graph", "table", "matrix"):
-            return f"$steps[{self._step_index}].{key}"
+            return self._token(key)
         return default
 
 
@@ -595,11 +658,43 @@ class BatchContext:
             self.commands.clear()
             self._pending_proxies.clear()
             self._flushed = False
+        self._reject_foreign_tokens(method, params)
         idx = len(self.commands)
         self.commands.append({"method": str(method), "params": params})
-        return _BatchRecordedResult(idx, method, params)
+        return _BatchRecordedResult(idx, method, params, self)
+
+    def _reject_foreign_tokens(self, method: str, value: Any, where: str = "params") -> None:
+        """Raise :class:`BatchTokenScopeError` for a ``$steps[i]`` token recorded by another batch.
+
+        Nested batches are flushed separately and number their steps from 0, so an outer
+        batch's ``$steps[0].name`` used in an inner batch would resolve to the inner step 0.
+        """
+        if isinstance(value, _BatchToken):
+            if value._owner_ref is not None and value._owner() is not self:
+                raise BatchTokenScopeError(
+                    f"'{method}' ({where}) uses {str(value)!r}, which refers to a step of a "
+                    "different `with app.batch():` block. Batches are sent separately and each "
+                    "numbers its steps from 0, so here it would silently resolve to a step of "
+                    "this batch instead. Use it inside the batch that created it, or after that "
+                    "batch has run."
+                )
+            return
+        if isinstance(value, Mapping):
+            for k, v in value.items():
+                self._reject_foreign_tokens(method, v, f"{where}.{k}")
+        elif isinstance(value, (list, tuple)):
+            for i, v in enumerate(value):
+                self._reject_foreign_tokens(method, v, f"{where}[{i}]")
 
     def _register_proxy(self, proxy: Any, token_name: str) -> None:
+        # A proxy named by another batch's token is patched by *that* batch when it runs;
+        # registering it here would rename it from this batch's step of the same index.
+        if isinstance(token_name, _BatchToken) and token_name._owner_ref is not None:
+            owner = token_name._owner()
+            if owner is not self:
+                if owner is not None:
+                    owner._register_proxy(proxy, token_name)
+                return
         if token_name.startswith("$steps[") and "]." in token_name:
             body = token_name[len("$steps[") :]
             idx_s, field = body.split("].", 1)
@@ -623,9 +718,10 @@ class BatchContext:
             merged.update(_sanitize_for_json(dict(params)))
         if kwargs:
             merged.update(_clean_kwargs(kwargs))
+        self._reject_foreign_tokens(str(method), merged)
         idx = len(self.commands)
         self.commands.append({"method": str(method), "params": merged})
-        return BatchStepRef(idx)
+        return BatchStepRef(idx, _owner=self)
 
     call = add
 
@@ -757,7 +853,7 @@ def _name_of(
     if isinstance(obj, str):
         return obj
     if hasattr(obj, "name"):
-        return str(obj.name)
+        return _keep_token_str(obj.name)
     return str(obj)
 
 
@@ -797,8 +893,21 @@ def _deprecated_alias(canonical: str, old: str) -> Callable[..., Any]:
 
 
 def _is_loopback_host(host: str) -> bool:
-    h = str(host).strip().lower().strip("[]")
-    return h in ("127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1") or h.startswith("127.")
+    """True only for a loopback IP literal (127.0.0.0/8, ::1) or exactly ``localhost``.
+
+    The local ``tcp_<port>.token`` is sent only to such hosts. A prefix test such as
+    ``startswith("127.")`` also matched DNS names like ``127.attacker.example`` and leaked
+    the token to whatever they resolve to.
+    """
+    h = str(host).strip().lower()
+    if h.startswith("[") and h.endswith("]"):
+        h = h[1:-1]
+    if h == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
 
 
 def _local_tcp_token_candidate_paths(port: int) -> List[Path]:
@@ -1387,7 +1496,7 @@ class TableProxy:
 
     def __init__(self, session: "Session", name: str) -> None:
         self.session = session
-        self.name = str(name)
+        self.name = _keep_token_str(name)
         if getattr(session, "_active_batch", None) is not None and self.name.startswith("$steps["):
             session._active_batch._register_proxy(self, self.name)  # type: ignore[union-attr]
 
@@ -1844,7 +1953,7 @@ class WorkbookProxy:
 
     def __init__(self, session: "Session", name: str) -> None:
         self.session = session
-        self.name = str(name)
+        self.name = _keep_token_str(name)
         if getattr(session, "_active_batch", None) is not None and self.name.startswith("$steps["):
             session._active_batch._register_proxy(self, self.name)  # type: ignore[union-attr]
 
@@ -1867,7 +1976,7 @@ class WorkbookProxy:
             "workbook.add_sheet", book=self.name, name=(name or ""), index=int(index),
             activate=bool(activate),
         )
-        return TableProxy(self.session, str(res["table"]))
+        return TableProxy(self.session, _keep_token_str(res["table"]))
 
     def attach(self, table: Union[str, "TableProxy"], *, index: int = -1) -> Dict[str, Any]:
         return self.session.call(
@@ -1882,11 +1991,11 @@ class WorkbookProxy:
 
     def rename_sheet(self, table: Union[str, "TableProxy"], name: str) -> "TableProxy":
         res = self.session.call("workbook.rename_sheet", table=_name_of(table), name=str(name))
-        return TableProxy(self.session, str(res["table"]))
+        return TableProxy(self.session, _keep_token_str(res["table"]))
 
     def rename(self, new_name: str) -> "WorkbookProxy":
         res = self.session.call("workbook.rename", book=self.name, new_name=str(new_name))
-        self.name = str(res.get("name", new_name))
+        self.name = _keep_token_str(res.get("name", new_name))
         if getattr(self.session, "_active_batch", None) is not None and self.name.startswith("$steps["):
             self.session._active_batch._register_proxy(self, self.name)  # type: ignore[union-attr]
         return self
@@ -1900,7 +2009,7 @@ class MatrixProxy:
 
     def __init__(self, session: "Session", name: str) -> None:
         self.session = session
-        self.name = str(name)
+        self.name = _keep_token_str(name)
         if getattr(session, "_active_batch", None) is not None and self.name.startswith("$steps["):
             session._active_batch._register_proxy(self, self.name)  # type: ignore[union-attr]
 
@@ -2051,7 +2160,7 @@ class GraphProxy:
 
     def __init__(self, session: "Session", name: str) -> None:
         self.session = session
-        self.name = str(name)
+        self.name = _keep_token_str(name)
         if getattr(session, "_active_batch", None) is not None and self.name.startswith("$steps["):
             session._active_batch._register_proxy(self, self.name)  # type: ignore[union-attr]
 
@@ -3943,7 +4052,7 @@ class Session:
             sheets=int(sheets),
             tables=[_name_of(t) for t in (tables or [])],
         )
-        return WorkbookProxy(self, str(res["name"]))
+        return WorkbookProxy(self, _keep_token_str(res["name"]))
 
     def list_workbooks(self) -> List[Dict[str, Any]]:
         return list(self.call("workbook.list").get("workbooks", []))
@@ -3974,7 +4083,7 @@ class Session:
             raise ValueError("Provide window 'name' (or 'old_name') and 'new_name'.")
         res = self.call("app.rename_window", name=_name_of(target), new_name=new_name)
         if isinstance(target, (TableProxy, MatrixProxy, GraphProxy)) and res.get("name"):
-            target.name = str(res["name"])
+            target.name = _keep_token_str(res["name"])
             if self._active_batch is not None and target.name.startswith("$steps["):
                 self._active_batch._register_proxy(target, target.name)
         return res
@@ -4125,7 +4234,7 @@ class Session:
             replace=bool(replace),
         )
         g_name = res.get("graph") or res.get("name") or (_name_of(eff_graph) if eff_graph is not None else "")
-        return GraphProxy(self, str(g_name))
+        return GraphProxy(self, _keep_token_str(g_name))
 
     def set_focus_hud(self, enabled: Optional[bool] = True) -> Dict[str, Any]:
         return self.call("app.set_focus_hud", enabled=enabled)
@@ -6581,7 +6690,7 @@ class Session:
             cols=(int(cols) if cols and cols > 0 else None),
             **kwargs,
         )
-        return GraphProxy(self, str(res["name"]))
+        return GraphProxy(self, _keep_token_str(res["name"]))
 
     def grab_gui_diagnostic(
         self, path: Optional[Union[str, os.PathLike[str]]] = None, **kwargs: Any

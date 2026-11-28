@@ -65,6 +65,10 @@ void registerOpjuTranslations()
                                                                       QString::fromUtf8(ja));
         };
         reg("Origin .opju Import", "Origin .opju の読み込み");
+        reg("The CPYUA .opju file holds more than %1 data cells and cannot be imported.",
+            "CPYUA 形式の .opju ファイルのデータセルが %1 個を超えるため、インポートできません。");
+        reg("The .opju file holds more than %1 data cells and cannot be imported.",
+            ".opju ファイルのデータセルが %1 個を超えるため、インポートできません。");
         reg("%1 graph window(s) were skipped (unsupported binary CPYUA/graph layout)",
             "%1 件のグラフウィンドウは形式上の制約によりスキップされました");
         reg("%1 matrix window(s) were skipped",
@@ -85,6 +89,11 @@ constexpr qint64 kMaxMatrixCells = 25000000LL; // 25M cells (~200 MB max)
 constexpr int kMaxWorksheetCols = 100000;
 constexpr int kMaxWorksheetRows = 25000000;
 constexpr qint64 kMaxWorksheetCells = 25000000LL;
+// Cells (values and text cells) one .opju file may decode to in all: each dataset or column is
+// capped at kMaxWorksheetRows, but a file of many small ones expanded without bound (~400 MB).
+constexpr qint64 kMaxOpjuParseCells = 50000000LL;
+// lowered by the regression suite through torigraphSetOpjuParseCellBudgetForTesting()
+qint64 g_opjuParseCellBudget = kMaxOpjuParseCells;
 
 inline bool isValidMatrixDimensions(qint64 rows, qint64 cols)
 {
@@ -1188,8 +1197,7 @@ public:
         }
 
         // 3. Resolve external binary/text streams referenced by columns, matrices, notes
-        resolveExternalStreams();
-        return true;
+        return resolveExternalStreams(outErr);
     }
 
 private:
@@ -2306,22 +2314,58 @@ private:
         return txt.trimmed();
     }
 
-    void resolveExternalStreams()
+    //! Decodes the binary streams of the columns and matrices. Fails when they hold more than
+    //! kMaxOpjuParseCells cells in all: thousands of columns may refer to one 256 MiB stream,
+    //! each decoding up to kMaxWorksheetRows values of it. A stream shared by several columns
+    //! is extracted (inflated) once while the extracted streams kept stay below 512 MiB.
+    bool resolveExternalStreams(QString *outErr)
     {
+        qint64 cellsLeft = g_opjuParseCellBudget;
+        constexpr qint64 kMaxCachedStreamBytes = 512LL * 1024 * 1024;
+        QHash<int, QByteArray> streamCache; // entry index -> extracted bytes (null: failed)
+        qint64 cachedBytes = 0;
+        auto extractCached = [&](int idx) -> const QByteArray * {
+            auto it = streamCache.find(idx);
+            if (it == streamCache.end()) {
+                QByteArray stream;
+                QString ignored;
+                if (!d_zip.extract(idx, stream, &ignored))
+                    stream = QByteArray();
+                if (cachedBytes + stream.size() > kMaxCachedStreamBytes) {
+                    streamCache.clear();
+                    cachedBytes = 0;
+                }
+                cachedBytes += stream.size();
+                it = streamCache.insert(idx, stream);
+            }
+            return it->isNull() ? nullptr : &it.value();
+        };
+        auto overBudget = [&]() {
+            if (outErr)
+                *outErr = QObject::tr("The .opju file holds more than %1 data cells and cannot "
+                                      "be imported.")
+                                  .arg(g_opjuParseCellBudget);
+            return false;
+        };
+
         for (OpjuWorksheet &ws : d_proj.worksheets) {
             for (OpjuColumn &col : ws.columns) {
+                const qint64 before = col.numericValues.size() + col.textValues.size();
                 if (!col.inlineBinary.isEmpty()) {
                     QString ignored;
                     decodeBinaryIntoColumn(col.inlineBinary, col, &ignored);
                 } else if (!col.dataRef.isEmpty()) {
                     const int idx = d_zip.findEntry(col.dataRef, col.baseDir);
                     if (idx >= 0) {
-                        QByteArray stream;
                         QString ignored;
-                        if (d_zip.extract(idx, stream, &ignored))
-                            decodeBinaryIntoColumn(stream, col, &ignored);
+                        if (const QByteArray *stream = extractCached(idx))
+                            decodeBinaryIntoColumn(*stream, col, &ignored);
                     }
                 }
+                cellsLeft -= std::max<qint64>(
+                        0, col.numericValues.size() + col.textValues.size() - before);
+                if (cellsLeft < 0)
+                    return overBudget();
             }
         }
 
@@ -2329,13 +2373,16 @@ private:
             if (mat.values.isEmpty() && !mat.dataRef.isEmpty()) {
                 const int idx = d_zip.findEntry(mat.dataRef, mat.baseDir);
                 if (idx >= 0) {
-                    QByteArray stream;
                     QString ignored;
-                    if (d_zip.extract(idx, stream, &ignored))
-                        decodeBinaryIntoMatrix(stream, mat, &ignored);
+                    if (const QByteArray *stream = extractCached(idx))
+                        decodeBinaryIntoMatrix(*stream, mat, &ignored);
                 }
             }
+            cellsLeft -= mat.values.size();
+            if (cellsLeft < 0)
+                return overBudget();
         }
+        streamCache.clear();
 
         for (OpjuNote &note : d_proj.notes) {
             if (note.text.isEmpty() && !note.dataRef.isEmpty()) {
@@ -2351,6 +2398,7 @@ private:
                 }
             }
         }
+        return true;
     }
 
     const ZipArchive &d_zip;
@@ -3161,15 +3209,56 @@ bool readCpyuaConstDouble(const unsigned char *buf, qint64 len, qint64 &pos, dou
     return false;
 }
 
+//! The FCM / DFCM predictor tables of decodeCpyuaFpcChunk(), kept for a whole dataset payload:
+//! allocating and zeroing two 2^preds tables (8 MiB each for preds = 20) for every run tag made a
+//! tiny file of thousands of 1-value FPC runs take minutes. Every chunk still starts from zeroed
+//! tables: the entries a chunk wrote are listed and cleared before the next chunk.
+struct CpyuaFpcTables
+{
+    QVector<quint64> fcm;
+    QVector<quint64> dfcm;
+    QVector<int> touchedFcm;
+    QVector<int> touchedDfcm;
+
+    void prepare(int tableSize)
+    {
+        if (fcm.size() < tableSize) {
+            fcm.fill(0ULL, tableSize);
+            dfcm.fill(0ULL, tableSize);
+            touchedFcm.clear();
+            touchedDfcm.clear();
+            return;
+        }
+        // Clearing every touched entry costs as much as the chunk that wrote them; past an
+        // eighth of the tables one fill is cheaper.
+        if (touchedFcm.size() > fcm.size() / 8) {
+            std::fill(fcm.begin(), fcm.end(), 0ULL);
+            std::fill(dfcm.begin(), dfcm.end(), 0ULL);
+        } else {
+            for (int i : touchedFcm)
+                fcm[i] = 0ULL;
+            for (int i : touchedDfcm)
+                dfcm[i] = 0ULL;
+        }
+        touchedFcm.clear();
+        touchedDfcm.clear();
+    }
+};
+
 bool decodeCpyuaFpcChunk(const unsigned char *buf, qint64 len, qint64 &pos, int count, int preds,
-                         QVector<double> &out)
+                         QVector<double> &out, CpyuaFpcTables &tables)
 {
     if (preds < 1 || preds > 20 || count < 0)
         return false;
     const quint64 tableSize = 1ULL << preds;
     const quint64 mask = tableSize - 1ULL;
-    QVector<quint64> fcm(static_cast<int>(tableSize), 0ULL);
-    QVector<quint64> dfcm(static_cast<int>(tableSize), 0ULL);
+    // Each value is at least half a code byte: a count the payload cannot hold is rejected
+    // before the tables are prepared.
+    if (static_cast<quint64>(count) > 2ULL * static_cast<quint64>(std::max<qint64>(0, len - pos)))
+        return false;
+    tables.prepare(static_cast<int>(tableSize));
+    quint64 *fcm = tables.fcm.data();
+    quint64 *dfcm = tables.dfcm.data();
     quint64 hash1 = 0, hash2 = 0, lastval = 0;
     const double qnan = std::numeric_limits<double>::quiet_NaN();
 
@@ -3188,17 +3277,18 @@ bool decodeCpyuaFpcChunk(const unsigned char *buf, qint64 len, qint64 &pos, int 
                 nbytes += 1;
             if (pos + nbytes > len)
                 return false;
-            const quint64 pred = useDfcm ? (dfcm[static_cast<int>(hash2)] + lastval)
-                                         : fcm[static_cast<int>(hash1)];
+            const quint64 pred = useDfcm ? (dfcm[hash2] + lastval) : fcm[hash1];
             quint64 xorVal = 0;
             for (int b = 0; b < nbytes; ++b)
                 xorVal |= static_cast<quint64>(buf[pos + b]) << (8 * b);
             pos += nbytes;
             const quint64 val = pred ^ xorVal;
-            fcm[static_cast<int>(hash1)] = val;
+            fcm[hash1] = val;
+            tables.touchedFcm.append(static_cast<int>(hash1));
             hash1 = ((hash1 << 6) ^ (val >> 48)) & mask;
             const quint64 diff = val - lastval;
-            dfcm[static_cast<int>(hash2)] = diff;
+            dfcm[hash2] = diff;
+            tables.touchedDfcm.append(static_cast<int>(hash2));
             hash2 = ((hash2 << 2) ^ (diff >> 40)) & mask;
             lastval = val;
 
@@ -3211,7 +3301,12 @@ bool decodeCpyuaFpcChunk(const unsigned char *buf, qint64 len, qint64 &pos, int 
     return true;
 }
 
-bool decodeCpyuaNumericPayload(const QByteArray &pay, QVector<double> &outValues)
+//! Decodes a 0x05 numeric dataset payload into at most \c maxValues values (and never more than
+//! kMaxWorksheetRows). When the payload holds more than \c maxValues values but no more than
+//! kMaxWorksheetRows, \c *budgetExceeded is set: the caller's parse-wide cell budget is spent.
+bool decodeCpyuaNumericPayload(const QByteArray &pay, QVector<double> &outValues,
+                               quint64 maxValues = static_cast<quint64>(kMaxWorksheetRows),
+                               bool *budgetExceeded = nullptr)
 {
     outValues.clear();
     if (pay.size() < 4 || static_cast<unsigned char>(pay[0]) != 0x05U)
@@ -3223,12 +3318,24 @@ bool decodeCpyuaNumericPayload(const QByteArray &pay, QVector<double> &outValues
     quint64 totalRows = 0;
     if (!readLeb128(buf, len, pos, totalRows))
         return false;
-    const quint64 maxRows = static_cast<quint64>(kMaxWorksheetRows);
-    if (totalRows > maxRows)
+    const quint64 worksheetRows = static_cast<quint64>(kMaxWorksheetRows);
+    const quint64 maxRows = std::min(worksheetRows, maxValues);
+    // true when \c add more values do not fit; flags the budget when only it is too small
+    auto overLimit = [&](quint64 add) -> bool {
+        const quint64 have = static_cast<quint64>(outValues.size());
+        if (add <= maxRows && have + add <= maxRows)
+            return false;
+        if (budgetExceeded && maxRows < worksheetRows && add <= worksheetRows
+            && have + add <= worksheetRows)
+            *budgetExceeded = true;
+        return true;
+    };
+    if (overLimit(totalRows))
         return false;
     outValues.reserve(static_cast<int>(std::min<quint64>(totalRows, 1000000ULL)));
 
     const double qnan = std::numeric_limits<double>::quiet_NaN();
+    CpyuaFpcTables fpcTables; // allocated by the first FPC run, reused by the next ones
     while (pos + 2 <= len) {
         const quint16 marker = static_cast<quint16>(buf[pos])
                 | (static_cast<quint16>(buf[pos + 1]) << 8);
@@ -3249,7 +3356,7 @@ bool decodeCpyuaNumericPayload(const QByteArray &pay, QVector<double> &outValues
                 if (!readLeb128(buf, len, pos, tag))
                     return false;
                 if (tag == 1ULL) {
-                    if (static_cast<quint64>(outValues.size()) >= maxRows)
+                    if (overLimit(1))
                         return false;
                     double v = qnan;
                     if (!readCpyuaConstDouble(buf, len, pos, v))
@@ -3258,18 +3365,17 @@ bool decodeCpyuaNumericPayload(const QByteArray &pay, QVector<double> &outValues
                     got += 1;
                 } else if (tag & 1ULL) {
                     const quint64 rc = (tag + 1ULL) >> 1;
-                    if (pos >= len || rc > maxRows
-                        || static_cast<quint64>(outValues.size()) + rc > maxRows)
+                    if (pos >= len || overLimit(rc))
                         return false;
                     const int preds = static_cast<int>(buf[pos++]);
-                    if (!decodeCpyuaFpcChunk(buf, len, pos, static_cast<int>(rc), preds, outValues))
+                    if (!decodeCpyuaFpcChunk(buf, len, pos, static_cast<int>(rc), preds, outValues,
+                                             fpcTables))
                         return false;
                     got += rc;
                 } else {
                     const quint64 rc = tag >> 1;
                     double v = qnan;
-                    if (rc > maxRows || static_cast<quint64>(outValues.size()) + rc > maxRows
-                        || !readCpyuaConstDouble(buf, len, pos, v))
+                    if (overLimit(rc) || !readCpyuaConstDouble(buf, len, pos, v))
                         return false;
                     for (quint64 k = 0; k < rc; ++k)
                         outValues.append(v);
@@ -3278,7 +3384,7 @@ bool decodeCpyuaNumericPayload(const QByteArray &pay, QVector<double> &outValues
             }
         } else {
             // Single-row literal entry: <kind:1B> <0x00:1B> <constDouble>
-            if (static_cast<quint64>(outValues.size()) >= maxRows)
+            if (overLimit(1))
                 return false;
             const unsigned char kind = buf[pos];
             if ((kind != 0x00U && kind != 0x01U) || buf[pos + 1] != 0x00U)
@@ -3437,6 +3543,9 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
             *outErr = QObject::tr("Truncated CPYUA .opju file after global header.");
         return false;
     }
+    // Cells the datasets may still decode to: run tags let each tiny dataset expand to
+    // kMaxWorksheetRows values, so a hundred of them asked for 20 GB.
+    qint64 cellsLeft = g_opjuParseCellBudget;
 
     struct RawCpyuaDataset
     {
@@ -3646,14 +3755,26 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
             ds.colName = ds.fullName;
         }
 
-        if (decodeCpyuaNumericPayload(payload, ds.values)) {
+        bool budgetExceeded = false;
+        if (decodeCpyuaNumericPayload(payload, ds.values, static_cast<quint64>(cellsLeft),
+                                      &budgetExceeded)) {
             ds.hasNumeric = true;
-        } else if (decodeCpyuaTextPayload(payload, textHint, ds.textValues)) {
+        } else if (!budgetExceeded && decodeCpyuaTextPayload(payload, textHint, ds.textValues)) {
             ds.isText = true;
+            ds.values.clear(); // what the numeric decoder read before it gave up
         } else {
             // Non-0x05 block with no decodable numeric/text payload: keep dataset slot for ID
             // alignment and continue to subsequent datasets instead of aborting (D4-8).
             ds.skipped = true;
+            ds.values.clear();
+        }
+        cellsLeft -= ds.values.size() + ds.textValues.size();
+        if (budgetExceeded || cellsLeft < 0) {
+            if (outErr)
+                *outErr = QObject::tr("The CPYUA .opju file holds more than %1 data cells and "
+                                      "cannot be imported.")
+                                  .arg(g_opjuParseCellBudget);
+            return false;
         }
         datasets.append(ds);
     }
@@ -3938,6 +4059,14 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
 }
 
 } // namespace
+
+//! Regression-test hook (declared by the regression suite, not in ImportOPJU.h): replaces the
+//! number of cells one .opju import may decode in all; a value <= 0 restores the default.
+void torigraphSetOpjuParseCellBudgetForTesting(qint64 cells);
+void torigraphSetOpjuParseCellBudgetForTesting(qint64 cells)
+{
+    g_opjuParseCellBudget = cells > 0 ? cells : kMaxOpjuParseCells;
+}
 
 bool ImportOPJU::isZipOpjuFile(const QString &fileName)
 {

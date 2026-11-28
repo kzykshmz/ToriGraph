@@ -30,6 +30,7 @@
  *                                                                         *
  ***************************************************************************/
 #include "importOPJ.h"
+#include <QPointer>
 
 #include "future/core/datatypes/Double2StringFilter.h"
 #include "future/core/datatypes/DateTime2StringFilter.h"
@@ -353,6 +354,24 @@ bool ImportOPJ::importSpreadsheet(const OriginFile &opj, const Origin::SpreadShe
     Table *table = mw->newTable(decodeMbcs(spread.name.c_str()), maxrows, columnCount);
     if (!table)
         return false;
+    // Every cell is written with its own command; with automatic formula recalculation on,
+    // each one re-evaluated the dependent / cross-table formulas (test/Histo.opj took minutes).
+    // Recalculate once when the sheet is filled instead.
+    struct AutoRecalcPause
+    {
+        QPointer<Table> t;
+        bool prev;
+        explicit AutoRecalcPause(Table *tbl) : t(tbl), prev(tbl->autoRecalcFormulas())
+        {
+            if (prev)
+                tbl->setAutoRecalcFormulas(false);
+        }
+        ~AutoRecalcPause()
+        {
+            if (prev && t)
+                t->setAutoRecalcFormulas(true);
+        }
+    } autoRecalcPause(table);
     if (spread.hidden || spread.loose)
         mw->hideWindow(table);
 

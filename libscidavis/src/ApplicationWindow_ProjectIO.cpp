@@ -60,8 +60,9 @@
 #include "ConfigDialog.h"
 #ifdef ORIGIN_IMPORT
 #include "importOPJ.h"
-#include "ImportOPJU.h"
 #endif
+// ImportOPJU (.opju) is always compiled (libscidavis/CMakeLists.txt) and used unconditionally.
+#include "ImportOPJU.h"
 #include "AssociationsDialog.h"
 #include "RenameWindowDialog.h"
 #include "QwtErrorPlotCurve.h"
@@ -1762,7 +1763,7 @@ bool ApplicationWindow::loadProjectImpl(const QString &fn, ApplicationWindow **o
                 plot->setWindowLabel(unescLbl);
                 setListViewLabel(plot->name(), unescLbl);
                 if (lst.length() > 2) {
-                    plot->setCaptionPolicy((MyWidget::CaptionPolicy)lst[2].toInt());
+                    plot->setCaptionPolicy(MyWidget::captionPolicyFromInt(lst[2].toInt()));
                 } else {
                     if (!nonInteractive) {
                         QMessageBox::warning(this, tr("File opening error"),
@@ -2775,7 +2776,7 @@ Note *ApplicationWindow::openNote(ApplicationWindow *app, const QStringList &fli
     lst = flist[2].split("\t");
     const QString unescNoteLbl = QString(lst.value(1)).replace(QLatin1String("&#9;"), QLatin1String("\t"));
     w->setWindowLabel(unescNoteLbl);
-    w->setCaptionPolicy((MyWidget::CaptionPolicy)lst.value(2).toInt());
+    w->setCaptionPolicy(MyWidget::captionPolicyFromInt(lst.value(2).toInt()));
     app->setListViewLabel(w->name(), unescNoteLbl);
     return w;
 }
@@ -3126,6 +3127,18 @@ static QString remapSurfacePlotSource(ApplicationWindow *app, const QStringList 
     }
     return src;
 }
+
+// Limits on the size of a table or matrix read from a project file (the same as
+// future::Table::load / future::Matrix::load): a crafted "Table1\t2000000000\t3" header or
+// data row index allocated gigabytes or overflowed the row arithmetic of the columns.
+constexpr int kMaxProjectRows = 1 << 26;
+constexpr int kMaxProjectColumns = 65536;
+constexpr qint64 kMaxProjectMatrixCells = 25000000LL;
+
+bool projectTableSizeOk(int rows, int cols)
+{
+    return rows >= 0 && rows <= kMaxProjectRows && cols >= 0 && cols <= kMaxProjectColumns;
+}
 } // namespace
 
 // TODO: most of this code belongs into matrix
@@ -3152,6 +3165,11 @@ Matrix *ApplicationWindow::openMatrix(ApplicationWindow *app, const QStringList 
             caption = QStringLiteral("Matrix");
         int rows = list[1].toInt();
         int cols = list[2].toInt();
+        if (!projectTableSizeOk(rows, cols)
+            || static_cast<qint64>(rows) * cols > kMaxProjectMatrixCells) {
+            app->setProperty("_tg_load_truncated", true);
+            return nullptr;
+        }
 
         Matrix *w = app->newMatrix(caption, rows, cols);
         {
@@ -3190,7 +3208,7 @@ Matrix *ApplicationWindow::openMatrix(ApplicationWindow *app, const QStringList 
             } else if (fields[0] == "WindowLabel") { // d_file_version > 71
                 const QString unescLbl = QString(fields.value(1)).replace(QLatin1String("&#9;"), QLatin1String("\t"));
                 w->setWindowLabel(unescLbl);
-                w->setCaptionPolicy((MyWidget::CaptionPolicy)fields.value(2).toInt());
+                w->setCaptionPolicy(MyWidget::captionPolicyFromInt(fields.value(2).toInt()));
                 app->setListViewLabel(w->name(), unescLbl);
             } else if (fields[0] == "Coordinates" && fields.size() >= 5) { // d_file_version > 81
                 w->setCoordinates(fields[1].toDouble(), fields[2].toDouble(), fields[3].toDouble(),
@@ -3337,6 +3355,11 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
             caption = QStringLiteral("Table");
         int rows = list[1].toInt();
         int cols = list[2].toInt();
+        if (!projectTableSizeOk(rows, cols)) {
+            if (app)
+                app->setProperty("_tg_load_truncated", true);
+            return nullptr;
+        }
 
         Table *w = app->newTable(caption, rows, cols);
         // Renames while the table is read (unique name, header) are recorded in renamedTables
@@ -3393,7 +3416,7 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
             } else if (fields[0] == "WindowLabel") { // d_file_version > 71
                 const QString unescLbl = QString(fields.value(1)).replace(QLatin1String("&#9;"), QLatin1String("\t"));
                 w->setWindowLabel(unescLbl);
-                w->setCaptionPolicy((MyWidget::CaptionPolicy)fields.value(2).toInt());
+                w->setCaptionPolicy(MyWidget::captionPolicyFromInt(fields.value(2).toInt()));
                 app->setListViewLabel(w->name(), unescLbl);
             } else // <data> or values
                 break;
@@ -3412,6 +3435,10 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
                 int row = fields[0].toInt(&okRow);
                 if (!okRow || row < 0)
                     continue;
+                if (row >= kMaxProjectRows) { // see projectTableSizeOk()
+                    app->setProperty("_tg_load_truncated", true);
+                    break;
+                }
                 for (int col = 0; col < cols; col++) {
                     if (fields.count() >= col + 2) {
                         QString cell = fields[col + 1];
@@ -3638,7 +3665,7 @@ TableStatistics *ApplicationWindow::openTableStatistics(const QStringList &flist
         } else if (fields[0] == "WindowLabel") { // d_file_version > 71
             const QString unescLbl = QString(fields.value(1)).replace(QLatin1String("&#9;"), QLatin1String("\t"));
             w->setWindowLabel(unescLbl);
-            w->setCaptionPolicy((MyWidget::CaptionPolicy)fields.value(2).toInt());
+            w->setCaptionPolicy(MyWidget::captionPolicyFromInt(fields.value(2).toInt()));
             setListViewLabel(w->name(), unescLbl);
         }
     }
@@ -4557,7 +4584,7 @@ Graph3D *ApplicationWindow::openSurfacePlot(ApplicationWindow *app, const QStrin
                                          .replace(QLatin1String("&#9;"), QLatin1String("\t"))
                                          .replace(QLatin1String("<br>"), QLatin1String("\n"));
         plot->setWindowLabel(unescLbl);
-        plot->setCaptionPolicy((MyWidget::CaptionPolicy)fList.value(2).toInt());
+        plot->setCaptionPolicy(MyWidget::captionPolicyFromInt(fList.value(2).toInt()));
         app->setListViewLabel(plot->name(), unescLbl);
     }
 
@@ -5368,7 +5395,7 @@ void ApplicationWindow::appendProject(const QString &fn)
                                                                   QLatin1String("\n"));
                         plot->setWindowLabel(unescLbl);
                         setListViewLabel(plot->name(), unescLbl);
-                        plot->setCaptionPolicy((MyWidget::CaptionPolicy)lst.value(2).toInt());
+                        plot->setCaptionPolicy(MyWidget::captionPolicyFromInt(lst.value(2).toInt()));
                     }
 
                     if (d_file_version > 83 && !t.atEnd()) {

@@ -118,6 +118,10 @@ void Grid::load(const QStringList &grid)
     Plot *d_plot = (Plot *)plot();
     if (!d_plot)
         return;
+    // Every format reads at least fields 1..12 (old QtiPlot) or 1..20 (since 0.9 final);
+    // a truncated "grid" line in a damaged project must not index past the list.
+    if (grid.count() < 13)
+        return;
 
     bool majorOnX = grid[1].toInt();
     bool minorOnX = grid[2].toInt();

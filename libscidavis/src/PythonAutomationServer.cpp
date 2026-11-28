@@ -86,6 +86,13 @@
 #endif
 #endif
 
+#ifndef Q_OS_WIN
+#include <cerrno>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#endif
+
 #ifdef ORIGIN_IMPORT
 #include "importOPJ.h"
 #endif
@@ -190,6 +197,16 @@
 #include <vector>
 
 using namespace rpc_internal;
+
+// Convert a parameter-derived double to int by clamping it as a double *first*: qRound()/int()
+// of a value outside the int range is undefined (x86 gives INT_MIN, so 1e10 landed on the wrong
+// end of the range). NaN maps to nanVal; +/-inf saturate at hi/lo.
+static int clampRoundParamToInt(double v, int lo, int hi, int nanVal)
+{
+    if (std::isnan(v))
+        return nanVal;
+    return qRound(std::clamp(v, double(lo), double(hi)));
+}
 
 namespace {
 
@@ -487,10 +504,11 @@ QColor parseColorValue(const QJsonValue &val, const QColor &fallback)
                         QStringLiteral("Color array elements must be finite numbers in [0, 255]."));
             }
         }
-        const int r = std::clamp(qRound(a[0].toDouble()), 0, 255);
-        const int g = std::clamp(qRound(a[1].toDouble()), 0, 255);
-        const int b = std::clamp(qRound(a[2].toDouble()), 0, 255);
-        const int al = (a.size() >= 4) ? std::clamp(qRound(a[3].toDouble()), 0, 255) : 255;
+        const int r = clampRoundParamToInt(a[0].toDouble(), 0, 255, 0);
+        const int g = clampRoundParamToInt(a[1].toDouble(), 0, 255, 0);
+        const int b = clampRoundParamToInt(a[2].toDouble(), 0, 255, 0);
+        const int al =
+                (a.size() >= 4) ? clampRoundParamToInt(a[3].toDouble(), 0, 255, 255) : 255;
         return QColor(r, g, b, al);
     }
     throwInvalidParams(
@@ -1072,8 +1090,12 @@ void applyDefaultNumericFormat6g(Table *t, int colIdx)
     if (!col || col->columnMode() != SciDAVis::ColumnMode::Numeric)
         return;
     if (auto *f = qobject_cast<Double2StringFilter *>(col->outputFilter())) {
-        f->setNumericFormat('g');
-        f->setNumDigits(6);
+        // Each setter pushes a command and redraws the column header: skip what is already set
+        // (wide imports call this for thousands of columns).
+        if (f->numericFormat() != 'g')
+            f->setNumericFormat('g');
+        if (f->numDigits() != 6)
+            f->setNumDigits(6);
     }
 }
 
@@ -4344,6 +4366,36 @@ QString rpcTokenDirectoryPath()
     return QDir(base).filePath(QStringLiteral("ToriGraph/rpc"));
 }
 
+#ifndef Q_OS_WIN
+// The token directory must be a real directory (not a symlink) owned by us. Another local user
+// can pre-create <tmp>/ToriGraph/rpc in the QDir::tempPath() fallback, or the ToriGraph parent
+// above it, and would then be able to read or swap the token file, so such a directory is refused.
+// The rpc directory itself is created 0700 and tightened to 0700 when it already exists.
+bool ensurePrivateRpcTokenDirectory(const QString &rpcDir)
+{
+    const uid_t me = geteuid();
+    const QString parentDir = QFileInfo(rpcDir).absolutePath();
+    if (!QDir().mkpath(parentDir))
+        return false;
+    struct stat pst {};
+    if (lstat(QFile::encodeName(parentDir).constData(), &pst) != 0 || !S_ISDIR(pst.st_mode)
+        || (pst.st_uid != me && pst.st_uid != 0))
+        return false;
+    // a world-writable parent without the sticky bit lets anyone rename our rpc dir away
+    if ((pst.st_mode & S_IWOTH) && !(pst.st_mode & S_ISVTX))
+        return false;
+    const QByteArray leaf = QFile::encodeName(rpcDir);
+    if (::mkdir(leaf.constData(), S_IRWXU) != 0 && errno != EEXIST)
+        return false;
+    struct stat st {};
+    if (lstat(leaf.constData(), &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != me)
+        return false;
+    if ((st.st_mode & (S_IRWXG | S_IRWXO)) != 0 && ::chmod(leaf.constData(), S_IRWXU) != 0)
+        return false;
+    return true;
+}
+#endif
+
 void lockDownWindowsOwnerOnlyAcl(const QString &targetPath)
 {
     QFile::setPermissions(targetPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
@@ -4422,12 +4474,22 @@ void PythonAutomationServer::writeTcpTokenFile(quint16 port)
     if (port == 0 || d_tcp_auth_token.isEmpty())
         return;
     const QString rpcDir = rpcTokenDirectoryPath();
+#ifdef Q_OS_WIN
     QDir().mkpath(rpcDir);
+#else
+    if (!ensurePrivateRpcTokenDirectory(rpcDir)) {
+        qWarning("ToriGraph RPC: refusing to write the TCP token file into '%s' (not a private "
+                 "directory owned by the current user).",
+                 qPrintable(QDir::toNativeSeparators(rpcDir)));
+        return;
+    }
+#endif
     const QString filePath =
             QDir(rpcDir).filePath(QStringLiteral("tcp_%1.token").arg(port));
     if (!d_tcp_token_file_path.isEmpty() && d_tcp_token_file_path != filePath)
         removeTcpTokenFile();
 
+#ifdef Q_OS_WIN
     QFile tf(filePath);
     if (tf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         tf.write(d_tcp_auth_token.toUtf8());
@@ -4436,6 +4498,26 @@ void PythonAutomationServer::writeTcpTokenFile(quint16 port)
         lockDownWindowsOwnerOnlyAcl(filePath);
         d_tcp_token_file_path = filePath;
     }
+#else
+    // The file is written to a temporary in the 0700 directory that is made owner-only *before*
+    // the token is written, then renamed over the old file (which also replaces, rather than
+    // follows, a symlink planted at the target path). The previous code wrote the token with
+    // umask permissions (typically 0644) and only tightened them afterwards.
+    QSaveFile tf(filePath);
+    if (!tf.open(QIODevice::WriteOnly))
+        return;
+    if (!tf.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
+        tf.cancelWriting(); // the temporary file is discarded, the old token file kept
+        return;
+    }
+    const QByteArray tok = d_tcp_auth_token.toUtf8();
+    if (tf.write(tok) != tok.size()) {
+        tf.cancelWriting(); // the temporary file is discarded, the old token file kept
+        return;
+    }
+    if (tf.commit())
+        d_tcp_token_file_path = filePath;
+#endif
 }
 
 void PythonAutomationServer::removeTcpTokenFile()

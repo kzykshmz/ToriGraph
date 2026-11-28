@@ -59,6 +59,25 @@ QPoint snapArrowEndpointAngle45(const QPoint &anchor, const QPoint &target)
 #include <qwt_plot.h>
 #include <qwt_plot_canvas.h>
 #include <qwt_painter.h>
+#include <algorithm>
+
+namespace {
+// QwtPlot::transform() rounds with qRound() into int, which overflows (UB) when the scale is
+// tiny or far from the arrow (e.g. a paired plot at 1e-16 data scale before autoscale, or a
+// damaged project). Clamp in double first; QPainter cannot draw beyond this range anyway.
+int arrowPixel(const QwtScaleMap &map, double v)
+{
+    const double px = map.xTransform(v);
+    if (!std::isfinite(px))
+        return 0;
+    return qRound(std::clamp(px, -1.0e7, 1.0e7));
+}
+
+int arrowPixel(const QwtPlot *plot, int axis, double v)
+{
+    return arrowPixel(plot->canvasMap(axis), v);
+}
+} // namespace
 
 namespace {
 double arrowScreenZoomScale(const QwtPlot *qwtPlot)
@@ -80,7 +99,8 @@ double arrowScreenZoomScale(const QwtPlot *qwtPlot)
 #endif
 
 ArrowMarker::ArrowMarker()
-    : d_end_arrow(true),
+    : d_start_arrow(false), // was left uninitialized: random start arrow heads
+      d_end_arrow(true),
       d_fill_head(true),
       d_head_angle(28),
       d_head_length(9),
@@ -220,10 +240,10 @@ double ArrowMarker::length()
     const QwtScaleMap &xMap = plot()->canvasMap(xAxis());
     const QwtScaleMap &yMap = plot()->canvasMap(yAxis());
 
-    const int x0 = xMap.transform(d_rect.left());
-    const int y0 = yMap.transform(d_rect.top());
-    const int x1 = xMap.transform(d_rect.right());
-    const int y1 = yMap.transform(d_rect.bottom());
+    const int x0 = arrowPixel(xMap, d_rect.left());
+    const int y0 = arrowPixel(yMap, d_rect.top());
+    const int x1 = arrowPixel(xMap, d_rect.right());
+    const int y1 = arrowPixel(yMap, d_rect.bottom());
 
     double l = sqrt(double((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0)));
     return fabs(l);
@@ -364,8 +384,8 @@ QPoint ArrowMarker::startPoint() const
     if (!plot())
         return QPoint();
 
-    return QPoint(plot()->transform(xAxis(), d_rect.left()),
-                  plot()->transform(yAxis(), d_rect.top()));
+    return QPoint(arrowPixel(plot(), xAxis(), d_rect.left()),
+                  arrowPixel(plot(), yAxis(), d_rect.top()));
 }
 
 QwtDoublePoint ArrowMarker::startPointCoord()
@@ -382,7 +402,7 @@ void ArrowMarker::setStartPoint(double x, double y)
         return;
 
     plot()->updateLayout();
-    d_start = QPoint(plot()->transform(xAxis(), x), plot()->transform(yAxis(), y));
+    d_start = QPoint(arrowPixel(plot(), xAxis(), x), arrowPixel(plot(), yAxis(), y));
 }
 
 QPoint ArrowMarker::endPoint() const
@@ -390,8 +410,8 @@ QPoint ArrowMarker::endPoint() const
     if (!plot())
         return QPoint();
 
-    return QPoint(plot()->transform(xAxis(), d_rect.right()),
-                  plot()->transform(yAxis(), d_rect.bottom()));
+    return QPoint(arrowPixel(plot(), xAxis(), d_rect.right()),
+                  arrowPixel(plot(), yAxis(), d_rect.bottom()));
 }
 
 void ArrowMarker::setEndPoint(double x, double y)
@@ -403,7 +423,7 @@ void ArrowMarker::setEndPoint(double x, double y)
         return;
 
     plot()->updateLayout();
-    d_end = QPoint(plot()->transform(xAxis(), x), plot()->transform(yAxis(), y));
+    d_end = QPoint(arrowPixel(plot(), xAxis(), x), arrowPixel(plot(), yAxis(), y));
 }
 
 QwtDoublePoint ArrowMarker::endPointCoord()
@@ -422,8 +442,8 @@ void ArrowMarker::setBoundingRect(double xs, double ys, double xe, double ye)
         return;
 
     plot()->updateLayout();
-    d_start = QPoint(plot()->transform(xAxis(), xs), plot()->transform(yAxis(), ys));
-    d_end = QPoint(plot()->transform(xAxis(), xe), plot()->transform(yAxis(), ye));
+    d_start = QPoint(arrowPixel(plot(), xAxis(), xs), arrowPixel(plot(), yAxis(), ys));
+    d_end = QPoint(arrowPixel(plot(), xAxis(), xe), arrowPixel(plot(), yAxis(), ye));
 }
 
 QwtDoubleRect ArrowMarker::boundingRect() const
@@ -440,8 +460,8 @@ void ArrowMarker::updateBoundingRect()
     const QwtScaleMap &xMap = plot()->canvasMap(xAxis());
     const QwtScaleMap &yMap = plot()->canvasMap(yAxis());
 
-    d_start = QPoint(xMap.transform(d_rect.left()), yMap.transform(d_rect.top()));
-    d_end = QPoint(xMap.transform(d_rect.right()), yMap.transform(d_rect.bottom()));
+    d_start = QPoint(arrowPixel(xMap, d_rect.left()), arrowPixel(yMap, d_rect.top()));
+    d_end = QPoint(arrowPixel(xMap, d_rect.right()), arrowPixel(yMap, d_rect.bottom()));
 }
 
 ArrowMarker::~ArrowMarker()

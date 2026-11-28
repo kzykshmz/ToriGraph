@@ -306,27 +306,32 @@ void Graph::updateCurvesData(Table *w, const QString &colName)
                     updated_curves++;
                 continue;
             }
-            auto colType = changedCol->columnMode();
-            const int cx = (c->xAxis() >= 0 && c->xAxis() < QwtPlot::axisCnt
-                            && c->xAxis() < axisType.size())
-                    ? c->xAxis()
-                    : QwtPlot::xBottom;
-            const int cy = (c->yAxis() >= 0 && c->yAxis() < QwtPlot::axisCnt
-                            && c->yAxis() < axisType.size())
-                    ? c->yAxis()
-                    : QwtPlot::yLeft;
-            const int ax = (c->xColumnName() == colName)
-                    ? (c->type() == HorizontalBars ? cy : cx)
-                    : (c->type() == HorizontalBars ? cx : cy);
-            const AxisType atype = (AxisType)axisType[ax];
-            // compare setLabels*Format() calls in insertCurve()
-            if ((colType == SciDAVis::ColumnMode::Text && atype != AxisType::Txt)
-                || (colType == SciDAVis::ColumnMode::DateTime
-                    && ((atype != AxisType::Time) && (atype != AxisType::Date)
-                        && (atype != AxisType::DateTime))))
-                to_remove << key;
-            else if (c->updateData(w, colName))
+            const bool isX = (c->xColumnName() == colName);
+            // Only curves loaded by DataCurve::loadData() can be held empty; the others load
+            // their own data (box position, bins, slices, vector ends, error values).
+            const bool canHold = !dynamic_cast<QwtErrorPlotCurve *>(c)
+                    && !dynamic_cast<BoxCurve *>(c) && !dynamic_cast<QwtHistogram *>(c)
+                    && !dynamic_cast<QwtPieCurve *>(c) && !dynamic_cast<VectorCurve *>(c);
+            bool offAxis = c->columnShownOffAxis(changedCol, isX);
+            if (!offAxis && canHold && c->isHeldEmpty()) {
+                // held empty for its other column: stays so while that one is still off-axis
+                Column *other = w->column(isX ? c->yColumnName() : c->xColumnName());
+                offAxis = other && c->columnShownOffAxis(other, !isX);
+            }
+            if (offAxis && !canHold) {
+                to_remove << key; // as before
+            } else if (offAxis) {
+                // The column became Text / DateTime under an axis that does not show it.
+                // Keep the curve (and its error bars) with no points instead of deleting it:
+                // the deletion was not recorded for Undo, so undoing the type change did not
+                // bring the curve back. It reloads once its columns fit the axes again.
+                c->holdEmpty();
                 updated_curves++;
+            } else {
+                c->releaseHeldEmpty();
+                if (c->updateData(w, colName))
+                    updated_curves++;
+            }
         } else if (c->updateData(w, colName))
             updated_curves++;
     }
@@ -703,8 +708,14 @@ void Graph::updateCurveLayout(int index, const CurveLayout *cL)
     } else if (style == VerticalSteps) {
         c->setStyle(QwtPlotCurve::Steps);
         c->setCurveAttribute(QwtPlotCurve::Inverted, true);
-    } else
-        c->setStyle((QwtPlotCurve::CurveStyle)cL->connectType);
+    } else {
+        // connectType comes from project files / scripts: keep it a valid QwtPlotCurve style
+        // (an INT_MIN from a damaged file was stored as an invalid enum value).
+        const int ct = cL->connectType;
+        const bool validStyle = (ct >= QwtPlotCurve::NoCurve && ct <= QwtPlotCurve::Dots)
+                || ct == QwtPlotCurve::UserCurve;
+        c->setStyle(validStyle ? (QwtPlotCurve::CurveStyle)ct : QwtPlotCurve::Lines);
+    }
 
     QBrush brush = QBrush(ColorButton::color(cL->aCol));
     if (cL->filledArea)
@@ -1131,6 +1142,22 @@ bool Graph::insertCurvesList(Table *w, const QStringList &names, int style, int 
         }
         QStringList lst = otherCurves + errorCurves;
 
+        // Work out the auto axis titles once after all curves are in (also on early return).
+        struct DeferAutoTitles
+        {
+            Graph *g;
+            explicit DeferAutoTitles(Graph *graph) : g(graph) { ++g->d_auto_title_refresh_defer; }
+            ~DeferAutoTitles()
+            {
+                if (--g->d_auto_title_refresh_defer == 0 && g->d_auto_title_refresh_pending) {
+                    g->d_auto_title_refresh_pending = false;
+                    if (!g->d_refreshing_auto_titles)
+                        g->refreshAutoAxisTitlesFromColumns();
+                    g->updatePlot(); // also on the early "return false" paths
+                }
+            }
+        } deferAutoTitles(this);
+
         for (int i = 0; i < lst.size(); i++) {
             CurveType type_of_i;
             int j = w->colIndex(lst[i]);
@@ -1305,9 +1332,15 @@ bool Graph::insertCurve(Table *w, const QString &xColName, const QString &yColNa
     }
 
     addLegendItem(yColName);
-    if (!d_refreshing_auto_titles)
-        refreshAutoAxisTitlesFromColumns();
-    updatePlot();
+    if (d_auto_title_refresh_defer > 0) {
+        // Bulk insert (insertCurvesList): titles and updatePlot() run once at the end; each
+        // updatePlot() scans every curve (zero snap, masks), which made N curves cost O(N^2).
+        d_auto_title_refresh_pending = true;
+    } else {
+        if (!d_refreshing_auto_titles)
+            refreshAutoAxisTitlesFromColumns();
+        updatePlot();
+    }
 
     return true;
 }
@@ -1721,6 +1754,8 @@ void Graph::removePie()
 
 bool Graph::curveUsesColumn(int index, const QString &s)
 {
+    if (s.isEmpty())
+        return false;
     QwtPlotItem *it = plotItem(index);
     if (!it)
         return false;
@@ -1737,8 +1772,22 @@ bool Graph::curveUsesColumn(int index, const QString &s)
     if (!dc)
         return false;
 
-    return dc->plotAssociation().contains(QRegExp("\\b" + QRegExp::escape(s) + "\\b"))
-            || dc->plotAssociation().contains(QRegExp("\b" + s + "\b"));
+    // Exact full column names ("Table_col") only: a word-boundary match on plotAssociation()
+    // took the curves of "T_y.1" / "T_y err" with "T_y", and missed names ending in a
+    // non-word character ("t (s)", "Strain [%]"). The colour-map columns are not compared:
+    // the curve still plots without them (resolvePointMapColumn() tolerates a missing one).
+    if (dc->xColumnName() == s)
+        return true;
+    if (auto *er = dynamic_cast<QwtErrorPlotCurve *>(dc)) {
+        DataCurve *master = er->masterCurve();
+        if (master && (master->xColumnName() == s || master->title().text() == s))
+            return true;
+    }
+    if (auto *vc = dynamic_cast<VectorCurve *>(dc)) {
+        if (vc->vectorEndXAColName() == s || vc->vectorEndYMColName() == s)
+            return true;
+    }
+    return false;
 }
 
 Graph::TakenCurves Graph::takeCurvesUsingColumns(const QStringList &names)
@@ -2946,7 +2995,9 @@ void Graph::setCurveStyle(int index, int s)
         c->setCurveAttribute(QwtPlotCurve::Inverted, false);
         c_type[index] = HorizontalSteps;
     }
-    c->setStyle((QwtPlotCurve::CurveStyle)s);
+    const bool validStyle =
+            (s >= QwtPlotCurve::NoCurve && s <= QwtPlotCurve::Dots) || s == QwtPlotCurve::UserCurve;
+    c->setStyle(validStyle ? (QwtPlotCurve::CurveStyle)s : QwtPlotCurve::Lines);
 }
 
 void Graph::setCurveSymbol(int index, const QwtSymbol &s)
@@ -3509,6 +3560,7 @@ void Graph::updateCurveNames(const QString &oldName, const QString &newName, boo
     };
     QHash<int, ChangedCurveInfo> changedByOneBased;
     QList<ChangedCurveInfo> changedList;
+    QList<Table *> changedTables;
 
     // update plotted curves list
     for (int i = 0; i < n_curves && i < c_keys.size(); i++) {
@@ -3543,6 +3595,10 @@ void Graph::updateCurveNames(const QString &oldName, const QString &newName, boo
             changedList.append(info);
             if (info.curveIdx >= 0)
                 changedByOneBased.insert(info.curveIdx + 1, info);
+            if (Table *tbl = c->table()) {
+                if (!changedTables.contains(tbl))
+                    changedTables.append(tbl);
+            }
         }
     }
 
@@ -3553,10 +3609,28 @@ void Graph::updateCurveNames(const QString &oldName, const QString &newName, boo
         auto isIdentChar = [](QChar ch) -> bool {
             return ch.isLetterOrNumber() || ch == QLatin1Char('_');
         };
+        // Full names of the columns of the renamed curves' tables: "T_y" is not replaced where
+        // the text has a longer column name that starts with it ("T_y.1", "T_y err", "T_y (2)"),
+        // as Graph::curveUsesColumn() compares whole column names.
+        QStringList knownColumnNames;
+        for (Table *tbl : changedTables) {
+            for (int ci = 0; ci < tbl->numCols(); ++ci)
+                knownColumnNames << tbl->colName(ci);
+        }
+        for (const ChangedCurveInfo &info : changedList)
+            knownColumnNames << info.prevTitle; // the names before a table rename
         auto replaceExactToken = [&](const QString &src, const QString &fromTok,
                                      const QString &toTok) -> QString {
             if (fromTok.isEmpty() || fromTok == toTok)
                 return src;
+            auto startsLongerName = [&](int hit) -> bool {
+                for (const QString &n : knownColumnNames) {
+                    if (n.size() > fromTok.size() && n.startsWith(fromTok)
+                        && src.midRef(hit, n.size()) == n)
+                        return true;
+                }
+                return false;
+            };
             QString out;
             out.reserve(src.size());
             int pos = 0;
@@ -3569,7 +3643,7 @@ void Graph::updateCurveNames(const QString &oldName, const QString &newName, boo
                 const bool leftBoundary = (hit == 0) || !isIdentChar(src.at(hit - 1));
                 const int after = hit + fromTok.size();
                 const bool rightBoundary = (after >= src.size()) || !isIdentChar(src.at(after));
-                if (leftBoundary && rightBoundary) {
+                if (leftBoundary && rightBoundary && !startsLongerName(hit)) {
                     out.append(src.mid(pos, hit - pos));
                     out.append(toTok);
                     pos = after;
@@ -3582,11 +3656,12 @@ void Graph::updateCurveNames(const QString &oldName, const QString &newName, boo
         };
 
         const QString origText = mrk->text();
-        const bool trailingNewline = origText.endsWith(QLatin1Char('\n'));
+        // Keep blank lines (as the legend editors do, Legend.cpp splitRawLegendLines()):
+        // split / join with KeepEmptyParts gives the text back unchanged, trailing newline too.
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-        QStringList lst = origText.split("\n", Qt::SkipEmptyParts);
+        QStringList lst = origText.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
 #else
-        QStringList lst = origText.split("\n", QString::SkipEmptyParts);
+        QStringList lst = origText.split(QLatin1Char('\n'), QString::KeepEmptyParts);
 #endif
         bool anyLegendChanged = false;
         for (int li = 0; li < lst.size(); ++li) {
@@ -3659,12 +3734,8 @@ void Graph::updateCurveNames(const QString &oldName, const QString &newName, boo
             }
         }
 
-        if (anyLegendChanged) {
-            QString joined = lst.join("\n");
-            if (trailingNewline && !joined.isEmpty())
-                joined += QLatin1Char('\n');
-            mrk->setText(joined);
-        }
+        if (anyLegendChanged)
+            mrk->setText(lst.join(QLatin1Char('\n')));
         if (anyLegendChanged || !changedList.isEmpty() || extraTagsChanged)
             d_plot->replot();
     } else if (!changedList.isEmpty() || extraTagsChanged) {

@@ -2439,6 +2439,7 @@ void Graph3D::setEmptyFloor()
 
 void Graph3D::setMeshLineWidth(int lw)
 {
+    lw = std::clamp(lw, 0, 100); // Qwt3D asserts val >= 0; damaged projects carry any int
     if ((int)sp->meshLineWidth() == lw)
         return;
 

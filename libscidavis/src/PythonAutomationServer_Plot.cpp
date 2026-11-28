@@ -190,6 +190,16 @@
 
 using namespace rpc_internal;
 
+// Convert a parameter-derived double to int by clamping it as a double *first*: qRound()/int()
+// of a value outside the int range is undefined (x86 gives INT_MIN, so 1e10 landed on the wrong
+// end of the range). NaN maps to nanVal; +/-inf saturate at hi/lo.
+static int clampRoundParamToInt(double v, int lo, int hi, int nanVal)
+{
+    if (std::isnan(v))
+        return nanVal;
+    return qRound(std::clamp(v, double(lo), double(hi)));
+}
+
 namespace {
 
 // C++17 SFINAE trait dispatchers for w1 / w2 contracts
@@ -1778,7 +1788,7 @@ void applyInlineCurveStyleParams(Graph *g, int cIdx, const QJsonObject &params,
                 parseFiniteCoordDouble(params.value(QStringLiteral("alpha")),
                                        QStringLiteral("alpha"));
         const int a255 = (rawA <= 1.0 && rawA >= 0.0) ? int(std::round(rawA * 255.0))
-                                                      : std::clamp(int(rawA), 0, 255);
+                                                      : clampRoundParamToInt(rawA, 0, 255, 255);
         col.setAlpha(a255);
     }
     pen.setColor(col);
@@ -1839,9 +1849,8 @@ void applyInlineCurveStyleParams(Graph *g, int cIdx, const QJsonObject &params,
         if (!symTypeVal.isUndefined() && !symTypeVal.isNull())
             sym.setStyle(parseQwtSymbolStyle(symTypeVal, sym.style()));
         if (!symSizeVal.isUndefined() && !symSizeVal.isNull()) {
-            const int sz = std::clamp(
-                    qRound(parseFiniteCoordDouble(symSizeVal, QStringLiteral("symbol_size"))), 1,
-                    200);
+            const int sz = clampRoundParamToInt(
+                    parseFiniteCoordDouble(symSizeVal, QStringLiteral("symbol_size")), 1, 200, 7);
             sym.setSize(sz, sz);
         } else if (!symTypeVal.isUndefined() && sym.style() != QwtSymbol::NoSymbol
                    && sym.size().width() <= 0) {
@@ -3838,7 +3847,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                                ? params.value(QStringLiteral("lw"))
                                : params.value(QStringLiteral("width")));
             if (!lwV.isUndefined() && !lwV.isNull())
-                vc->setWidth(std::clamp(qRound(lwV.toDouble(1.0)), 1, 20));
+                vc->setWidth(clampRoundParamToInt(lwV.toDouble(1.0), 1, 20, 1));
             if (params.contains(QStringLiteral("head_length")))
                 vc->setHeadLength(parseBoundedInt(params, QStringLiteral("head_length"), 8, 1, 64));
             if (params.contains(QStringLiteral("head_angle")))
@@ -4831,11 +4840,19 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
             rectArr.append(params.value(QStringLiteral("rel_h")).toDouble(0.38));
         }
         if (insetG && srcG && rectArr.size() >= 4) {
-            const double rx = rectArr[0].toDouble();
-            const double ry = rectArr[1].toDouble();
+            double rx = rectArr[0].toDouble();
+            double ry = rectArr[1].toDouble();
             const double rw = rectArr[2].toDouble();
             const double rh = rectArr[3].toDouble();
             if (rw > 0.0 && rh > 0.0 && rw <= 1.5 && rh <= 1.5) {
+                // A normalized origin outside [0, 1] ends at the canvas edge after the qBound
+                // below anyway; clamp it as a double first so qRound(rx * width) and
+                // cr.left() + ... cannot overflow int for rel_x = 1e10 (UB, INT_MIN). The
+                // clamped values are what the saved inset spec keeps as well.
+                rx = std::isfinite(rx) ? std::clamp(rx, -2.0, 3.0) : 0.0;
+                ry = std::isfinite(ry) ? std::clamp(ry, -2.0, 3.0) : 0.0;
+                rectArr[0] = rx;
+                rectArr[1] = ry;
                 QRect cr = srcG->geometry();
                 if (srcG->plotWidget()) {
                     srcG->plotWidget()->updateLayout();
@@ -4872,10 +4889,12 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                     insetG->raise();
                 }
             } else if (rw > 1.5 && rh > 1.5) {
-                int ix = qRound(rx);
-                int iy = qRound(ry);
-                int iw = std::max(60, qRound(rw));
-                int ih = std::max(50, qRound(rh));
+                // pixel geometry: clamp to the widget size limit before converting to int
+                constexpr int kMaxPx = QWIDGETSIZE_MAX;
+                int ix = clampRoundParamToInt(rx, -kMaxPx, kMaxPx, 0);
+                int iy = clampRoundParamToInt(ry, -kMaxPx, kMaxPx, 0);
+                int iw = clampRoundParamToInt(rw, 60, kMaxPx, 60);
+                int ih = clampRoundParamToInt(rh, 50, kMaxPx, 50);
                 if (srcG->plotWidget()) {
                     srcG->plotWidget()->updateLayout();
                     const QRect cr =
@@ -5087,7 +5106,9 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
             QJsonObject subP;
             subP[QStringLiteral("graph")] = gv;
             MultiLayer *srcMl = resolveMultiLayer(d_app, subP, QStringLiteral("graph"), true);
-            if (srcMl && !srcMl->isEmpty())
+            // The same window named twice (or "Graph1" / "graph1", which resolve to one window)
+            // counts once, so ["Graph1", "Graph1"] no longer passes the "at least two" check.
+            if (srcMl && !srcMl->isEmpty() && !chosenGraphs.contains(srcMl))
                 chosenGraphs.append(srcMl);
         }
         if (chosenGraphs.size() < 2)

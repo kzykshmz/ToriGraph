@@ -676,7 +676,9 @@ void SmoothFilter::smoothLowess(std::vector<double> &x, std::vector<double> &y)
             }
 
             const double scale = 6.0 * mad;
-            if (scale <= 1e-14 * (yMaxAbs + 1.0))
+            // Relative to the data magnitude only: the old "+ 1.0" made every pA-scale residual
+            // look like zero and silently skipped the robustness iterations.
+            if (!(scale > 1e-14 * yMaxAbs))
                 break;
 
             for (int i = 0; i < n; ++i) {

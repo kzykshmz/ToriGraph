@@ -190,6 +190,16 @@
 
 using namespace rpc_internal;
 
+// Convert a parameter-derived double to int by clamping it as a double *first*: qRound()/int()
+// of a value outside the int range is undefined (x86 gives INT_MIN, so 1e10 landed on the wrong
+// end of the range). NaN maps to nanVal; +/-inf saturate at hi/lo.
+static int clampRoundParamToInt(double v, int lo, int hi, int nanVal)
+{
+    if (std::isnan(v))
+        return nanVal;
+    return qRound(std::clamp(v, double(lo), double(hi)));
+}
+
 namespace {
 
 // Accepts an integer or a fractional point size (12 or 12.9) within [minVal, maxVal].
@@ -2915,7 +2925,7 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
             const QJsonValue rv = params.contains(QStringLiteral("label_rotation"))
                     ? params.value(QStringLiteral("label_rotation"))
                     : params.value(QStringLiteral("rotation"));
-            const int rot = std::clamp(qRound(rv.toDouble(0.0)), -90, 90);
+            const int rot = clampRoundParamToInt(rv.toDouble(0.0), -90, 90, 0);
             g->setAxisLabelRotation(ax, rot);
         }
 
@@ -3339,10 +3349,17 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
         QColor fillCol = parseColorValue(params.value(QStringLiteral("color")),
                                          QColor(30, 102, 184, 55));
         if (params.contains(QStringLiteral("alpha"))) {
-            const double rawA = params.value(QStringLiteral("alpha")).toDouble(55.0);
-            const int a255 = (rawA <= 1.0 && rawA >= 0.0) ? int(std::round(rawA * 255.0))
-                                                          : std::clamp(int(rawA), 0, 255);
-            fillCol.setAlpha(a255);
+            // A string such as "0.5" used to fall back to toDouble(55.0) silently; reject it.
+            // [0, 1] is a fraction, anything else is a 0..255 level clamped as a double first
+            // (int(1e10) is UB and gave INT_MIN -> fully transparent instead of opaque).
+            if (!params.value(QStringLiteral("alpha")).isNull()) {
+                const double rawA = parseFiniteCoordDouble(params.value(QStringLiteral("alpha")),
+                                                           QStringLiteral("alpha"));
+                const int a255 = (rawA <= 1.0 && rawA >= 0.0)
+                        ? int(std::round(rawA * 255.0))
+                        : clampRoundParamToInt(rawA, 0, 255, 255);
+                fillCol.setAlpha(a255);
+            }
         }
         const QString bandTitle = params.contains(QStringLiteral("title"))
                 ? optionalJsonString(params, QStringLiteral("title"))
@@ -3477,7 +3494,7 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
                                ? params.value(QStringLiteral("lw"))
                                : params.value(QStringLiteral("linewidth")));
             if (!lwV.isUndefined() && !lwV.isNull())
-                vc->setWidth(std::clamp(qRound(lwV.toDouble(1.0)), 1, 20));
+                vc->setWidth(clampRoundParamToInt(lwV.toDouble(1.0), 1, 20, 1));
             if (params.contains(QStringLiteral("head_length")))
                 vc->setHeadLength(parseBoundedInt(params, QStringLiteral("head_length"), 8, 1, 64));
             if (params.contains(QStringLiteral("head_angle")))

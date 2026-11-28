@@ -70,6 +70,64 @@ else()
 endif()
 
 # liborigin
+#
+# The bundled liborigin (git submodule, upstream SciDAVis/liborigin) is
+# hardened against truncated/corrupted .opj files by
+# patches/liborigin-hardening.patch, applied here at configure time because
+# the submodule itself cannot carry our commits. Idempotent: the patch is
+# detected as already applied via a marker comment, so re-configuring is a
+# no-op. Never fails the configure step: if git is missing or the patch does
+# not apply (e.g. the submodule was updated), it only warns.
+# Fuzz harness: liborigin-fuzz/ (see build.sh / fuzz.py there).
+function( torigraph_apply_liborigin_hardening )
+  set( _dir "${CMAKE_CURRENT_SOURCE_DIR}/liborigin" )
+  set( _patch "${CMAKE_CURRENT_SOURCE_DIR}/patches/liborigin-hardening.patch" )
+  set( _probe "${_dir}/OriginAnyParser.cpp" )
+  set( _marker "[liborigin-hardening]" )
+  set_property( DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_patch}" )
+  if( NOT EXISTS "${_patch}" OR NOT EXISTS "${_probe}" )
+    message( WARNING "liborigin: hardening patch or sources missing, building unpatched liborigin" )
+    return()
+  endif()
+  file( READ "${_probe}" _src )
+  string( FIND "${_src}" "${_marker}" _pos )
+  if( NOT _pos EQUAL -1 )
+    message( STATUS "liborigin: hardening patch already applied" )
+    return()
+  endif()
+  find_package( Git QUIET )
+  if( NOT GIT_FOUND )
+    message( WARNING "liborigin: git not found, cannot apply ${_patch}; "
+                     "the .opj importer is NOT hardened against corrupted files" )
+    return()
+  endif()
+  # GIT_CEILING_DIRECTORIES keeps git from treating liborigin/ as a sub
+  # directory of the ToriGraph repository when it is not a submodule checkout
+  # (git apply would then silently skip every file).
+  set( _git "${CMAKE_COMMAND}" -E env "GIT_CEILING_DIRECTORIES=${CMAKE_CURRENT_SOURCE_DIR}"
+       "${GIT_EXECUTABLE}" apply )
+  # second attempt tolerates CRLF working trees (core.autocrlf=true on Windows)
+  foreach( _opts "--verbose" "--ignore-whitespace;--verbose" )
+    execute_process( COMMAND ${_git} --check ${_opts} "${_patch}"
+                     WORKING_DIRECTORY "${_dir}"
+                     RESULT_VARIABLE _rc OUTPUT_VARIABLE _out ERROR_VARIABLE _err )
+    if( _rc EQUAL 0 )
+      execute_process( COMMAND ${_git} ${_opts} "${_patch}"
+                       WORKING_DIRECTORY "${_dir}"
+                       RESULT_VARIABLE _rc OUTPUT_VARIABLE _out ERROR_VARIABLE _err )
+      break()
+    endif()
+  endforeach()
+  file( READ "${_probe}" _src )
+  string( FIND "${_src}" "${_marker}" _pos )
+  if( _rc EQUAL 0 AND NOT _pos EQUAL -1 )
+    message( STATUS "liborigin: applied hardening patch ${_patch}" )
+  else()
+    message( WARNING "liborigin: could not apply ${_patch} (submodule changed?); "
+                     "the .opj importer is NOT hardened against corrupted files.\n${_err}" )
+  endif()
+endfunction()
+
 if( ORIGIN_IMPORT )
   find_package( PkgConfig )
   if( PkgConfig_FOUND )
@@ -77,6 +135,7 @@ if( ORIGIN_IMPORT )
   endif()
   if( NOT PkgConfig_FOUND OR NOT LIBORIGIN_FOUND )
     message( STATUS "liborigin: using own code" )
+    torigraph_apply_liborigin_hardening()
     add_subdirectory( liborigin )
   endif()
 else()

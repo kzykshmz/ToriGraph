@@ -2110,6 +2110,8 @@ static void syncPlotScaleDrawTicksState(ScaleDraw *sd, int minTickLen, int majTi
 void Plot::setMajorTicksType(int axis, int type)
 {
     ScaleDraw *sd = (ScaleDraw *)axisScaleDraw(axis);
+    if (type < ScaleDraw::None || type > ScaleDraw::In) // damaged project / script value
+        type = ScaleDraw::Out;
     if (sd) {
         sd->setMajorTicksStyle((ScaleDraw::TicksStyle)type);
         syncPlotScaleDrawTicksState(sd, minTickLength, majTickLength);
@@ -2132,6 +2134,8 @@ QList<int> Plot::getMinorTicksType()
 void Plot::setMinorTicksType(int axis, int type)
 {
     ScaleDraw *sd = (ScaleDraw *)axisScaleDraw(axis);
+    if (type < ScaleDraw::None || type > ScaleDraw::In)
+        type = ScaleDraw::Out;
     if (sd) {
         sd->setMinorTicksStyle((ScaleDraw::TicksStyle)type);
         syncPlotScaleDrawTicksState(sd, minTickLength, majTickLength);

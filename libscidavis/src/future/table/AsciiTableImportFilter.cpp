@@ -103,6 +103,82 @@ int g_maxImportColumns = kMaxAsciiImportColumns;
 qint64 g_importOutlierCells = kAsciiImportOutlierCells;
 qint64 g_maxImportCells = kMaxAsciiImportCells;
 
+//! The refusal of a table of \c maxCols columns x \c rows rows above
+//! g_importOutlierCells cells whose width comes from outlier lines only (see
+//! kAsciiImportOutlierCells); empty when the table may be built. \c widthCounts maps each line
+//! width (number of fields) to its number of lines.
+QString outlierWidthRefusal(const QMap<int, qint64> &widthCounts, int maxCols, qint64 rows)
+{
+    if (qint64(maxCols) * std::max<qint64>(1, rows) <= g_importOutlierCells)
+        return QString();
+    qint64 lines = 0;
+    for (const qint64 n : widthCounts)
+        lines += n;
+    int medianWidth = maxCols;
+    qint64 cumulative = 0;
+    for (auto it = widthCounts.cbegin(); it != widthCounts.cend(); ++it) {
+        cumulative += it.value();
+        if (2 * cumulative >= lines) {
+            medianWidth = it.key();
+            break;
+        }
+    }
+    const qint64 outlierWidth = qint64(std::max(1, medianWidth)) * kAsciiImportOutlierFactor;
+    qint64 outlierLines = 0;
+    for (auto it = widthCounts.cbegin(); it != widthCounts.cend(); ++it) {
+        if (it.key() > outlierWidth)
+            outlierLines += it.value();
+    }
+    if (lines > 0 && maxCols > outlierWidth && outlierLines * 100 < lines) {
+        return QObject::tr("%1 line(s) of the file have far more fields (up to %2) "
+                           "than the other lines (typically %3), which would make a "
+                           "table of %4 rows x %2 columns. Check the column separator "
+                           "or remove those lines.")
+                .arg(outlierLines)
+                .arg(maxCols)
+                .arg(medianWidth)
+                .arg(rows);
+    }
+    return QString();
+}
+
+//! Rows marked in ascending order, collected as runs for one IntervalAttribute<bool> built at
+//! the end: IntervalAttribute::setValue() scans all the intervals set so far, so marking the
+//! empty cells one by one took a time growing with the square of the rows when blank and filled
+//! cells alternate.
+class AscendingRowRuns
+{
+public:
+    void add(int row)
+    {
+        if (!d_runs.isEmpty()) {
+            Interval<int> &last = d_runs.last();
+            if (row >= last.start() && row <= last.end())
+                return;
+            if (row == last.end() + 1) {
+                last.setEnd(row);
+                return;
+            }
+            if (row < last.start())
+                d_sorted = false;
+        }
+        d_runs.append(Interval<int>(row, row));
+    }
+    IntervalAttribute<bool> attribute() const
+    {
+        if (d_sorted)
+            return IntervalAttribute<bool>(d_runs);
+        IntervalAttribute<bool> attr; // rows were not ascending: merge run by run
+        for (const Interval<int> &iv : d_runs)
+            attr.setValue(iv, true);
+        return attr;
+    }
+
+private:
+    QList<Interval<int>> d_runs;
+    bool d_sorted = true;
+};
+
 void attachStdDisplayFormat(Column *col)
 {
     if (!col)
@@ -1965,6 +2041,19 @@ future::Table *tryParseSpecTextInternal(const QString &decoded, const QString &e
         if (nCols <= 0)
             continue;
         const int nRows = sc.rows.size();
+        // One line of a scan with far more fields than the others (a run-together line) would
+        // make nCols x nRows cells, mostly padding: refused like such a line of a plain table.
+        {
+            QMap<int, qint64> widthCounts;
+            for (const QStringList &r : sc.rows)
+                ++widthCounts[int(r.size())];
+            const QString refusal = outlierWidthRefusal(widthCounts, nCols, nRows);
+            if (!refusal.isEmpty()) {
+                qDeleteAll(cols);
+                g_lastImportReport.refusal = refusal;
+                return nullptr;
+            }
+        }
         if (cols.size() + nCols > g_maxImportColumns
             || totalAllocatedCells + qint64(nCols) * qint64(nRows) > g_maxImportCells) {
             qDeleteAll(cols);
@@ -2011,7 +2100,7 @@ future::Table *tryParseSpecTextInternal(const QString &decoded, const QString &e
             Column *col = nullptr;
             if (allNumeric) {
                 std::unique_ptr<QVector<qreal>> vec(new QVector<qreal>(nRows, 0.0));
-                IntervalAttribute<bool> inv;
+                AscendingRowRuns inv;
                 for (int r = 0; r < nRows; ++r) {
                     const QString cell = (c < sc.rows[r].size()) ? sc.rows[r][c] : QString();
                     double dv = 0.0;
@@ -2020,11 +2109,11 @@ future::Table *tryParseSpecTextInternal(const QString &decoded, const QString &e
                         && std::isfinite(dv)) {
                         (*vec)[r] = dv;
                     } else {
-                        inv.setValue(r, true);
+                        inv.add(r);
                         ++missingCells;
                     }
                 }
-                col = new Column(uniqueShort, std::move(vec), inv);
+                col = new Column(uniqueShort, std::move(vec), inv.attribute());
                 attachStdDisplayFormat(col);
             } else {
                 std::unique_ptr<QStringList> vec(new QStringList());
@@ -2143,20 +2232,37 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 QStringLiteral("\\*MEAS_SCAN_UNIT_X\\s+\"([^\"]*)\""));
         static const QRegularExpression kUnitYRe(
                 QStringLiteral("\\*MEAS_SCAN_UNIT_Y\\s+\"([^\"]*)\""));
-        // Unit of the scan header nearest above `before` (each scan of a multi-scan file has
-        // its own *RAS_HEADER block), falling back to the default.
-        auto unitBefore = [&decoded](const QRegularExpression &re, int before,
-                                     const QString &fallback) -> QString {
-            QString found = fallback;
+        // The non-empty units of the scan headers with their positions, found once: scanning
+        // the whole text again for every *RAS_INT_START block took minutes for a file of 100k
+        // (empty) blocks.
+        struct UnitMarks
+        {
+            QVector<int> pos;
+            QStringList unit;
+        };
+        auto findUnits = [&decoded](const QRegularExpression &re) -> UnitMarks {
+            UnitMarks marks;
             QRegularExpressionMatchIterator it = re.globalMatch(decoded);
             while (it.hasNext()) {
                 const QRegularExpressionMatch m = it.next();
-                if (m.capturedStart() > before)
-                    break;
-                if (!m.captured(1).trimmed().isEmpty())
-                    found = m.captured(1).trimmed();
+                const QString unit = m.captured(1).trimmed();
+                if (!unit.isEmpty()) {
+                    marks.pos.append(m.capturedStart());
+                    marks.unit.append(unit);
+                }
             }
-            return found;
+            return marks;
+        };
+        const UnitMarks unitXMarks = findUnits(kUnitXRe);
+        const UnitMarks unitYMarks = findUnits(kUnitYRe);
+        // Unit of the scan header nearest above `before` (each scan of a multi-scan file has
+        // its own *RAS_HEADER block), falling back to the default.
+        auto unitBefore = [](const UnitMarks &marks, int before,
+                             const QString &fallback) -> QString {
+            const auto it = std::upper_bound(marks.pos.cbegin(), marks.pos.cend(), before);
+            if (it == marks.pos.cbegin())
+                return fallback;
+            return marks.unit.at(int(it - marks.pos.cbegin()) - 1);
         };
 
         QLocale cLoc = QLocale::c();
@@ -2183,23 +2289,45 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 intEnd = (nextStart >= 0) ? nextStart : decoded.size();
             searchFrom = std::max(intEnd, bodyStart);
 
-            const QString unitX = unitBefore(kUnitXRe, intStart, QStringLiteral("deg."));
-            const QString unitY = unitBefore(kUnitYRe, intStart, QStringLiteral("cps"));
+            const QString unitX = unitBefore(unitXMarks, intStart, QStringLiteral("deg."));
+            const QString unitY = unitBefore(unitYMarks, intStart, QStringLiteral("cps"));
 
             const QString body = decoded.mid(bodyStart, std::max(0, intEnd - bodyStart));
             QVector<QVector<LabCsvCell>> rasRows;
             int rasCols = 0;
             parseDelimitedRecordsFast(body, 0, QStringLiteral(" "), true, true, true, rasRows,
                                       rasCols);
-            // Drop '*' metadata lines that may sit inside a block.
-            for (int r = rasRows.size() - 1; r >= 0; --r) {
-                if (!rasRows[r].isEmpty() && rasRows[r][0].value.trimmed().startsWith(QLatin1Char('*')))
-                    rasRows.remove(r);
+            // Drop '*' metadata lines that may sit inside a block (in one pass: removing them
+            // one by one moved all the later rows each time).
+            {
+                int kept = 0;
+                for (int r = 0; r < rasRows.size(); ++r) {
+                    if (!rasRows[r].isEmpty()
+                        && rasRows[r][0].value.trimmed().startsWith(QLatin1Char('*')))
+                        continue;
+                    if (kept != r)
+                        rasRows[kept] = std::move(rasRows[r]);
+                    ++kept;
+                }
+                rasRows.resize(kept);
             }
             const int nRows = rasRows.size();
             if (nRows == 0 && blockIdx > 0)
                 continue;
             rasCols = std::max(2, rasCols);
+            // A run-together line with far more fields than the others: see the SPEC parser.
+            {
+                QMap<int, qint64> widthCounts;
+                for (const QVector<LabCsvCell> &r : rasRows)
+                    ++widthCounts[r.size()];
+                const QString refusal =
+                        outlierWidthRefusal(widthCounts, rasCols, std::max(totalRows, nRows));
+                if (!refusal.isEmpty()) {
+                    qDeleteAll(cols);
+                    g_lastImportReport.refusal = refusal;
+                    return nullptr;
+                }
+            }
             if (cols.size() + rasCols > g_maxImportColumns
                 || qint64(cols.size() + rasCols) * qint64(std::max(totalRows, nRows))
                         > g_maxImportCells) {
@@ -2217,7 +2345,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
 
             for (int c = 0; c < rasCols; ++c) {
                 std::unique_ptr<QVector<qreal>> vec(new QVector<qreal>(nRows, 0.0));
-                IntervalAttribute<bool> inv;
+                AscendingRowRuns inv;
                 for (int r = 0; r < nRows; ++r) {
                     const QString cellTxt =
                             (c < rasRows[r].size()) ? rasRows[r][c].value.trimmed() : QString();
@@ -2233,7 +2361,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                         }
                         (*vec)[r] = scaled;
                     } else {
-                        inv.setValue(r, true);
+                        inv.add(r);
                         ++missingCells;
                     }
                 }
@@ -2241,7 +2369,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                         : (c == 1)          ? QStringLiteral("Intensity")
                         : (c == 2)          ? QStringLiteral("Factor")
                                             : QStringLiteral("Col%1").arg(c + 1);
-                Column *col = new Column(colShort + suffix, std::move(vec), inv);
+                Column *col = new Column(colShort + suffix, std::move(vec), inv.attribute());
                 if (c == 0) {
                     col->setLongName(QStringLiteral("2θ"));
                     col->setUnits(unitX);
@@ -4153,45 +4281,14 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                               .arg(maxCols)
                               .arg(g_maxImportColumns);
         } else if (cells > g_importOutlierCells) {
-            // widths in ascending order with their line counts
-            QVector<QPair<int, qint64>> widths;
+            QMap<int, qint64> widthCounts;
             for (int w = 0; w <= kWidthHistSmall; ++w) {
                 if (widthHist[w] > 0)
-                    widths.append(qMakePair(w, widthHist[w]));
+                    widthCounts.insert(w, widthHist[w]);
             }
-            QList<int> largeWidths = widthHistLarge.keys();
-            std::sort(largeWidths.begin(), largeWidths.end());
-            for (int w : largeWidths)
-                widths.append(qMakePair(w, widthHistLarge.value(w)));
-            qint64 lines = 0;
-            for (const auto &wc : widths)
-                lines += wc.second;
-            int medianWidth = maxCols;
-            qint64 cumulative = 0;
-            for (const auto &wc : widths) {
-                cumulative += wc.second;
-                if (2 * cumulative >= lines) {
-                    medianWidth = wc.first;
-                    break;
-                }
-            }
-            const qint64 outlierWidth =
-                    qint64(std::max(1, medianWidth)) * kAsciiImportOutlierFactor;
-            qint64 outlierLines = 0;
-            for (const auto &wc : widths) {
-                if (wc.first > outlierWidth)
-                    outlierLines += wc.second;
-            }
-            if (lines > 0 && maxCols > outlierWidth && outlierLines * 100 < lines) {
-                refusal = QObject::tr("%1 line(s) of the file have far more fields (up to %2) "
-                                      "than the other lines (typically %3), which would make a "
-                                      "table of %4 rows x %2 columns. Check the column separator "
-                                      "or remove those lines.")
-                                  .arg(outlierLines)
-                                  .arg(maxCols)
-                                  .arg(medianWidth)
-                                  .arg(dataRowCount);
-            }
+            for (auto it = widthHistLarge.cbegin(); it != widthHistLarge.cend(); ++it)
+                widthCounts.insert(it.key(), it.value());
+            refusal = outlierWidthRefusal(widthCounts, maxCols, dataRowCount);
         }
         if (refusal.isEmpty() && cells > g_maxImportCells) {
             refusal = QObject::tr("The file is too large to import: %1 rows x %2 columns (at most "
@@ -4210,7 +4307,10 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
 
     // 5. Stream directly into pre-allocated column buffers (0 intermediate Cell matrix!)
     std::vector<std::unique_ptr<QVector<qreal>>> numVecs(static_cast<size_t>(maxCols));
-    QVector<IntervalAttribute<bool>> invalidAttrs(maxCols);
+    // Runs of empty / invalid rows per column, ascending and separated by valid rows: the
+    // column's IntervalAttribute is built from them in one step (setValue() per run scanned
+    // all the runs so far, a time growing with the square of the rows for alternating blanks).
+    QVector<QList<Interval<int>>> invalidRuns(maxCols);
     QVector<int> runInvalidStart(maxCols, -1);
     QVector<bool> useText(maxCols, !convertToNumeric);
     QVector<bool> needsTextBackfill(maxCols, false);
@@ -4275,7 +4375,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                     continue;
                 }
                 if (runInvalidStart[c] >= 0) {
-                    invalidAttrs[c].setValue(Interval<int>(runInvalidStart[c], r - 1), true);
+                    invalidRuns[c].append(Interval<int>(runInvalidStart[c], r - 1));
                     runInvalidStart[c] = -1;
                 }
 
@@ -4325,8 +4425,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 strayNonNumCount[c] = 0;
             } else {
                 if (runInvalidStart[c] >= 0) {
-                    invalidAttrs[c].setValue(Interval<int>(runInvalidStart[c], dataRowCount - 1),
-                                             true);
+                    invalidRuns[c].append(Interval<int>(runInvalidStart[c], dataRowCount - 1));
                 }
                 if (anyQuoted[c] && !anyFiniteNumber[c]) {
                     useText[c] = true;
@@ -4446,7 +4545,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             colIsNumeric[c] = false;
         } else {
             col = new Column(shortName, std::move(numVecs[static_cast<size_t>(c)]),
-                             invalidAttrs[c]);
+                             IntervalAttribute<bool>(invalidRuns[c]));
             if (auto *d2s = qobject_cast<Double2StringFilter *>(col->outputFilter())) {
                 d2s->setNumericFormat('g');
                 d2s->setNumDigits(6);
@@ -4498,7 +4597,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             continue;
         }
         int invalidCount = 0;
-        for (const Interval<int> &iv : invalidAttrs[c].intervals())
+        for (const Interval<int> &iv : invalidRuns.at(c))
             invalidCount += iv.end() - iv.start() + 1;
         const int stray = strayNonNumCount[c];
         rep.nonNumericCells += stray;

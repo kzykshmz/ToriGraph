@@ -92,12 +92,15 @@ constexpr long long kTestTimingScale = 1;
 #include <QRegularExpression>
 #include <QTabWidget>
 #include <QTimer>
+#include <QThread>
 #include <QTreeWidget>
 #include <QWheelEvent>
 #include <cmath>
 #include <functional>
 #include <iostream>
+#ifdef Q_OS_WIN
 #include <wrl/client.h>
+#endif
 #include "SettingsTransfer.h"
 #include "PptxExport.h"
 #include "ZipReader.h"
@@ -115,7 +118,9 @@ constexpr long long kTestTimingScale = 1;
 #define M_PI 3.14159265358979323846
 #endif
 
+#ifdef Q_OS_WIN
 using Microsoft::WRL::ComPtr;
+#endif
 
 #include "CrashHandler.h"
 #include "Graph3D.h"
@@ -193,6 +198,7 @@ using Microsoft::WRL::ComPtr;
 #include <gdiplus.h>
 #endif
 
+#ifdef Q_OS_WIN
 struct EmfRecordStats {
     int totalRecords = 0;
     int vectorPathOrLineRecords = 0;
@@ -238,6 +244,8 @@ inline int CALLBACK enumEmfProc(HDC, HANDLETABLE *, const ENHMETARECORD *rec, in
     return 1;
 }
 
+#endif // Q_OS_WIN
+
 #define CHECK_COND(cond, msg) \
     do { \
         if (!(cond)) { \
@@ -273,7 +281,7 @@ inline bool setClipboardTextVerified(const QString &text)
         QCoreApplication::processEvents();
         if (normalizedClipboardText(QApplication::clipboard()->text()) == want)
             return true;
-        Sleep(25 + 5 * k);
+        QThread::msleep(25 + 5 * k);
     }
     return false;
 }
@@ -284,6 +292,7 @@ inline bool clipboardStillHolds(const QString &text)
     return normalizedClipboardText(QApplication::clipboard()->text()) == normalizedClipboardText(text);
 }
 
+#ifdef Q_OS_WIN
 //! OleGetClipboard with a few retries (another process may have the clipboard open)
 inline HRESULT oleGetClipboardRetry(ComPtr<IDataObject> &out)
 {
@@ -366,6 +375,8 @@ inline const char *retryClipboardStep(const std::function<const char *()> &attem
     }
     return err;
 }
+
+#endif // Q_OS_WIN
 
 // -------------------------------------------------------------------------------------------
 // Modal watchdog: a modal dialog that nobody answers would stop the whole run (and with it every
@@ -695,5 +706,10 @@ int runSuite112HeatmapHolesAndHistogramBins(ApplicationWindow *mw);
 int runSuite113SwarmAuditRegressions(ApplicationWindow *mw);
 int runSuite114DeepSwarmAuditRegressions(ApplicationWindow *mw);
 int runSuite115Campaign2SwarmAuditRegressions(ApplicationWindow *mw);
+int runSuite116ImportAndProjectLoadLimits(ApplicationWindow *mw);
+int runSuite117ScaleInvariantStatistics(ApplicationWindow *mw);
+int runSuite118RpcParamAndSdkHardening(ApplicationWindow *mw);
+int runSuite119CurveColumnBookkeeping(ApplicationWindow *mw);
+int runSuite120FuzzCampaignRegressions(ApplicationWindow *mw);
 
 #endif // TORIGRAPH_OLE_TEST_COMMON_H

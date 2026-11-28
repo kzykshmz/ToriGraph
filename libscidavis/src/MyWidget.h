@@ -70,6 +70,12 @@ public:
         Label = 1, //!< caption detemined by the window label
         Both = 2 //!< caption = "name - label"
     };
+    //! Caption policy stored as a number in a project file; out-of-range values (damaged file)
+    //! fall back to Name instead of being cast to an invalid enum value.
+    static CaptionPolicy captionPolicyFromInt(int v)
+    {
+        return (v == Label) ? Label : (v == Both) ? Both : Name;
+    }
     enum Status { Hidden = -1, Normal = 0, Minimized = 1, Maximized = 2 };
 
     //! Return the window label

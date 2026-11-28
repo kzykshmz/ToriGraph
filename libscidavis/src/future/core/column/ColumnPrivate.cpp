@@ -52,6 +52,17 @@
 #include <stdexcept>
 using namespace std;
 
+namespace {
+//! Whether rows [first, first + count) fit in an int-indexed column: a row index of INT_MAX
+//! (a legacy project's data line "2147483647\t1") made row + 1 overflow and the column write
+//! out of bounds.
+bool rowsFitInColumn(int first, int count)
+{
+    return first >= 0 && count >= 0
+            && static_cast<qint64>(first) + count <= std::numeric_limits<int>::max();
+}
+} // namespace
+
 Column::Private::Private(Column *owner, SciDAVis::ColumnMode mode) : d_owner(owner)
 {
     Q_ASSERT(owner != 0); // a Column::Private without owner is not allowed
@@ -957,7 +968,7 @@ double Column::Private::valueAt(int row) const
 
 void Column::Private::setTextAt(int row, const QString &new_value)
 {
-    if (d_data_type != SciDAVis::TypeQString || row < 0)
+    if (d_data_type != SciDAVis::TypeQString || !rowsFitInColumn(row, 1))
         return;
 
     emit d_owner->dataAboutToChange(d_owner);
@@ -974,7 +985,8 @@ void Column::Private::setTextAt(int row, const QString &new_value)
 
 void Column::Private::replaceTexts(int first, const QStringList &new_values)
 {
-    if (d_data_type != SciDAVis::TypeQString || first < 0 || new_values.isEmpty())
+    if (d_data_type != SciDAVis::TypeQString || new_values.isEmpty()
+        || !rowsFitInColumn(first, new_values.size()))
         return;
 
     emit d_owner->dataAboutToChange(d_owner);
@@ -1008,7 +1020,7 @@ void Column::Private::setTimeAt(int row, const QTime &new_value)
 
 void Column::Private::setDateTimeAt(int row, const QDateTime &new_value)
 {
-    if (d_data_type != SciDAVis::TypeQDateTime || row < 0)
+    if (d_data_type != SciDAVis::TypeQDateTime || !rowsFitInColumn(row, 1))
         return;
 
     emit d_owner->dataAboutToChange(d_owner);
@@ -1025,7 +1037,8 @@ void Column::Private::setDateTimeAt(int row, const QDateTime &new_value)
 
 void Column::Private::replaceDateTimes(int first, const QList<QDateTime> &new_values)
 {
-    if (d_data_type != SciDAVis::TypeQDateTime || first < 0 || new_values.isEmpty())
+    if (d_data_type != SciDAVis::TypeQDateTime || new_values.isEmpty()
+        || !rowsFitInColumn(first, new_values.size()))
         return;
 
     emit d_owner->dataAboutToChange(d_owner);
@@ -1057,7 +1070,7 @@ void Column::Private::replaceDateTimes(int first, const QList<QDateTime> &new_va
 
 void Column::Private::setValueAt(int row, double new_value)
 {
-    if (d_data_type != SciDAVis::TypeDouble || row < 0)
+    if (d_data_type != SciDAVis::TypeDouble || !rowsFitInColumn(row, 1))
         return;
 
     emit d_owner->dataAboutToChange(d_owner);
@@ -1074,7 +1087,8 @@ void Column::Private::setValueAt(int row, double new_value)
 
 void Column::Private::replaceValues(int first, const QVector<qreal> &new_values)
 {
-    if (d_data_type != SciDAVis::TypeDouble || first < 0 || new_values.isEmpty())
+    if (d_data_type != SciDAVis::TypeDouble || new_values.isEmpty()
+        || !rowsFitInColumn(first, new_values.size()))
         return;
 
     emit d_owner->dataAboutToChange(d_owner);

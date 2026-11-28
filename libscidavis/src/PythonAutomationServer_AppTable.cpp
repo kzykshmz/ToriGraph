@@ -195,6 +195,16 @@
 
 using namespace rpc_internal;
 
+// Convert a parameter-derived double to int by clamping it as a double *first*: qRound()/int()
+// of a value outside the int range is undefined (x86 gives INT_MIN, so 1e10 landed on the wrong
+// end of the range). NaN maps to nanVal; +/-inf saturate at hi/lo.
+static int clampRoundParamToInt(double v, int lo, int hi, int nanVal)
+{
+    if (std::isnan(v))
+        return nanVal;
+    return qRound(std::clamp(v, double(lo), double(hi)));
+}
+
 namespace {
 
 Matrix *createUniqueMatrixHeadless(ApplicationWindow *app, int rows, int cols, const QString &reqName)
@@ -2551,7 +2561,16 @@ QJsonValue resolveSingleBatchToken(const QString &token, const QVector<QJsonObje
         }
         refIdx = curStepIdx - 1;
     } else {
-        refIdx = m.captured(2).toInt();
+        // toInt() without `ok` maps an overflowing index such as $steps[4294967296] to 0,
+        // silently binding the token to step 0. Reject anything that does not fit in int.
+        bool okRef = false;
+        refIdx = m.captured(2).toInt(&okRef);
+        if (!okRef) {
+            throwInvalidParams(
+                    QStringLiteral("Step %1 references out-of-range '$steps[%2]' in '%3'.")
+                            .arg(curStepIdx)
+                            .arg(m.captured(2), token));
+        }
         if (refIdx < 0 || refIdx >= curStepIdx || refIdx >= results.size()) {
             throwInvalidParams(
                     QStringLiteral("Step %1 references invalid or future '$steps[%2]' in '%3'.")
@@ -5166,8 +5185,8 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                     if (sv.isBool())
                         vsb->setValue(sv.toBool() ? vsb->maximum() : 0);
                     else if (sv.isDouble())
-                        vsb->setValue(std::clamp(qRound(sv.toDouble()), vsb->minimum(),
-                                                 vsb->maximum()));
+                        vsb->setValue(clampRoundParamToInt(sv.toDouble(), vsb->minimum(),
+                                                           vsb->maximum(), vsb->value()));
                     pumpLayoutEvents();
                 }
             }
@@ -6483,16 +6502,30 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         }
         QVector<int> rowsToChange;
         if (params.value(QStringLiteral("rows")).isArray()) {
+            // Every entry must be an integer row index inside the table: 2.5, "3", 1e12 and -1
+            // used to be dropped silently, so a typo masked nothing and still returned ok.
             for (const QJsonValue &rv : params.value(QStringLiteral("rows")).toArray()) {
-                const int r = rv.toInt(-1);
-                if (r >= 0 && r < t->numRows())
-                    rowsToChange.append(r);
+                const int r = parseStrictJsonInt(rv, QStringLiteral("rows"));
+                if (r < 0 || r >= t->numRows()) {
+                    throwInvalidParams(
+                            QStringLiteral("Parameter 'rows' entry %1 is out of range [0, %2).")
+                                    .arg(r)
+                                    .arg(t->numRows()));
+                }
+                rowsToChange.append(r);
             }
         } else if (params.contains(QStringLiteral("start_row"))
                    || params.contains(QStringLiteral("end_row"))) {
-            const int r0 = std::max(0, params.value(QStringLiteral("start_row")).toInt(0));
+            // null bounds keep their defaults (the SDK sends start_row=None, end_row=None)
+            const QJsonValue sv = params.value(QStringLiteral("start_row"));
+            const QJsonValue ev = params.value(QStringLiteral("end_row"));
+            const int r0 = std::max(0, (sv.isUndefined() || sv.isNull())
+                                               ? 0
+                                               : parseStrictJsonInt(sv, QStringLiteral("start_row")));
             const int r1 = std::min(t->numRows() - 1,
-                                    params.value(QStringLiteral("end_row")).toInt(t->numRows() - 1));
+                                    (ev.isUndefined() || ev.isNull())
+                                            ? t->numRows() - 1
+                                            : parseStrictJsonInt(ev, QStringLiteral("end_row")));
             for (int r = r0; r <= r1; ++r)
                 rowsToChange.append(r);
         } else if (!maskFlag

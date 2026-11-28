@@ -314,17 +314,30 @@ static void primaryAxesForGraph(Graph *g, int &xAxisOut, int &yAxisOut)
     }
 }
 
+// "Zero up to rounding" relative to the data scale. Absolute 1e-12 / 1e-15 floors made pA- and
+// fs-scale traces look flat (no Quick Peaks, fallback FWHM); at scale 1 this is ~1.4e-14.
+static inline double gadgetRelTol(double scale)
+{
+    return 64.0 * std::numeric_limits<double>::epsilon() * std::fabs(scale);
+}
+
 static double estimateFwhm(const std::vector<double> &x, const std::vector<double> &y,
                            double yBase, int peakIdx)
 {
     const int n = static_cast<int>(x.size());
+    // Fallback width: a fraction of the X span (the old 1e-9 floor is only used for a zero span,
+    // since it is enormous next to an fs-scale axis).
+    auto spanFraction = [&](double f) -> double {
+        const double w = (x.back() - x.front()) * f;
+        return (w > 0.0) ? w : 1e-9;
+    };
     if (n < 2 || peakIdx < 0 || peakIdx >= n)
-        return (n >= 2) ? std::max(1e-9, (x.back() - x.front()) * 0.25) : 1.0;
+        return (n >= 2) ? spanFraction(0.25) : 1.0;
 
     const double yTop = y[size_t(peakIdx)];
     const double diffTop = yTop - yBase;
-    if (std::fabs(diffTop) <= 1e-30)
-        return std::max(1e-9, (x.back() - x.front()) * 0.25);
+    if (!(std::fabs(diffTop) > gadgetRelTol(std::max(std::fabs(yTop), std::fabs(yBase)))))
+        return spanFraction(0.25);
     const double yHalf = yBase + 0.5 * diffTop;
 
     double xLeft = x.front();
@@ -332,7 +345,9 @@ static double estimateFwhm(const std::vector<double> &x, const std::vector<doubl
         if ((y[size_t(i - 1)] <= yHalf && y[size_t(i)] >= yHalf)
             || (y[size_t(i - 1)] >= yHalf && y[size_t(i)] <= yHalf)) {
             const double dy = y[size_t(i)] - y[size_t(i - 1)];
-            const double frac = (std::fabs(dy) > 1e-15) ? ((yHalf - y[size_t(i - 1)]) / dy) : 0.5;
+            const double dyTol =
+                    gadgetRelTol(std::max(std::fabs(y[size_t(i)]), std::fabs(y[size_t(i - 1)])));
+            const double frac = (std::fabs(dy) > dyTol) ? ((yHalf - y[size_t(i - 1)]) / dy) : 0.5;
             xLeft = x[size_t(i - 1)] + frac * (x[size_t(i)] - x[size_t(i - 1)]);
             break;
         }
@@ -343,14 +358,17 @@ static double estimateFwhm(const std::vector<double> &x, const std::vector<doubl
         if ((y[size_t(i)] >= yHalf && y[size_t(i + 1)] <= yHalf)
             || (y[size_t(i)] <= yHalf && y[size_t(i + 1)] >= yHalf)) {
             const double dy = y[size_t(i + 1)] - y[size_t(i)];
-            const double frac = (std::fabs(dy) > 1e-15) ? ((yHalf - y[size_t(i)]) / dy) : 0.5;
+            const double dyTol =
+                    gadgetRelTol(std::max(std::fabs(y[size_t(i + 1)]), std::fabs(y[size_t(i)])));
+            const double frac = (std::fabs(dy) > dyTol) ? ((yHalf - y[size_t(i)]) / dy) : 0.5;
             xRight = x[size_t(i)] + frac * (x[size_t(i + 1)] - x[size_t(i)]);
             break;
         }
     }
 
     const double w = std::fabs(xRight - xLeft);
-    return (w > 1e-12) ? w : std::max(1e-9, (x.back() - x.front()) * 0.2);
+    const double xScale = std::max(std::fabs(x.front()), std::fabs(x.back()));
+    return (w > 0.0 && w > gadgetRelTol(xScale)) ? w : spanFraction(0.2);
 }
 
 struct NlFitContext {
@@ -2141,8 +2159,12 @@ void RoiGadgetTool::recalculate()
     std::vector<XYPoint> pts;
     pts.reserve(size_t(nTotal));
 
-    const double roiEpsX = 1e-9 * std::max(1.0, roi.width());
-    const double roiEpsY = 1e-9 * std::max(1.0, roi.height());
+    // Edge slack relative to the ROI size (an absolute 1e-9 floor swallowed the whole ROI of an
+    // fs / pA-scale curve, so every point counted as inside).
+    const double roiScaleX = std::max(std::fabs(roi.left()), std::fabs(roi.right()));
+    const double roiScaleY = std::max(std::fabs(roi.top()), std::fabs(roi.bottom()));
+    const double roiEpsX = 1e-9 * std::max(roi.width(), gadgetRelTol(roiScaleX));
+    const double roiEpsY = 1e-9 * std::max(roi.height(), gadgetRelTol(roiScaleY));
     for (int i = 0; i < nTotal; ++i) {
         const double px = curve->x(i);
         const double py = curve->y(i);
@@ -2617,9 +2639,12 @@ void RoiGadgetTool::recalculate()
                 ys[i] = 0.25 * yv[i - 1] + 0.5 * yv[i] + 0.25 * yv[i + 1];
         }
 
+        // Prominence floor relative to the trace magnitude (an absolute 1e-12 hid every peak of a
+        // pA-scale trace).
+        const double promFloor = gadgetRelTol(std::max(std::fabs(minY), std::fabs(maxY)));
         const double promThresh = d_detect_negative_peaks
-                ? std::max(1e-12, 0.08 * (yBase - minY))
-                : std::max(1e-12, 0.08 * (maxY - yBase));
+                ? std::max(promFloor, 0.08 * (yBase - minY))
+                : std::max(promFloor, 0.08 * (maxY - yBase));
         const int minSep = std::max(1, static_cast<int>(n / 25));
         struct Cand {
             int idx;

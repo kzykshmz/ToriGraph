@@ -3701,21 +3701,50 @@ public:
             d_snapshots.append(ptr);
             if (Column *col = ptr->column.data()) {
                 std::weak_ptr<Graph::ColumnMaskSnapshot> weakSnap(ptr);
+                // The masks of rows the table removes, kept so that the table's Undo of that
+                // removal (which inserts the same rows at the same place again, during an
+                // Undo / Redo replay) gives them back to this command; otherwise its own
+                // Undo / Redo forgot those rows. A plain insertion gets no masks.
+                auto removedSlices = std::make_shared<QVector<RemovedMaskSlice>>();
                 d_connections.append(QObject::connect(
                         col, &AbstractColumn::rowsAboutToBeInserted,
-                        [weakSnap](const AbstractColumn *, int before, int count) {
+                        [weakSnap, removedSlices](const AbstractColumn *, int before, int count) {
                             if (auto sp = weakSnap.lock()) {
                                 if (count > 0 && before >= 0) {
                                     sp->addedMasks.insertRows(before, count);
                                     sp->removedMasks.insertRows(before, count);
+                                    if (!removedSlices->isEmpty()
+                                        && removedSlices->last().first == before
+                                        && removedSlices->last().count == count
+                                        && Table::isUndoRedoReplaying()) {
+                                        const RemovedMaskSlice slice = removedSlices->takeLast();
+                                        for (const Interval<int> &iv : slice.added)
+                                            sp->addedMasks.setValue(
+                                                    Interval<int>(iv.start() + before,
+                                                                  iv.end() + before),
+                                                    true);
+                                        for (const Interval<int> &iv : slice.removed)
+                                            sp->removedMasks.setValue(
+                                                    Interval<int>(iv.start() + before,
+                                                                  iv.end() + before),
+                                                    true);
+                                    }
                                 }
                             }
                         }));
                 d_connections.append(QObject::connect(
                         col, &AbstractColumn::rowsAboutToBeRemoved,
-                        [weakSnap](const AbstractColumn *, int first, int count) {
+                        [weakSnap, removedSlices](const AbstractColumn *, int first, int count) {
                             if (auto sp = weakSnap.lock()) {
                                 if (count > 0 && first >= 0) {
+                                    RemovedMaskSlice slice;
+                                    slice.first = first;
+                                    slice.count = count;
+                                    slice.added = sliceOfRows(sp->addedMasks, first, count);
+                                    slice.removed = sliceOfRows(sp->removedMasks, first, count);
+                                    if (removedSlices->size() >= 64)
+                                        removedSlices->removeFirst();
+                                    removedSlices->append(slice);
                                     sp->addedMasks.removeRows(first, count);
                                     sp->removedMasks.removeRows(first, count);
                                 }
@@ -3744,6 +3773,28 @@ public:
     }
 
 private:
+    struct RemovedMaskSlice
+    {
+        int first = 0;
+        int count = 0;
+        QList<Interval<int>> added;   //!< relative to first
+        QList<Interval<int>> removed; //!< relative to first
+    };
+
+    static QList<Interval<int>> sliceOfRows(const IntervalAttribute<bool> &attr, int first,
+                                            int count)
+    {
+        QList<Interval<int>> out;
+        const int last = first + count - 1;
+        for (const Interval<int> &iv : attr.intervals()) {
+            const int s = qMax(iv.start(), first);
+            const int e = qMin(iv.end(), last);
+            if (s <= e)
+                out.append(Interval<int>(s - first, e - first));
+        }
+        return out;
+    }
+
     void applyState(bool isUndo)
     {
         if (d_snapshots.isEmpty())
@@ -3936,19 +3987,21 @@ int Graph::clearAllCurveMasksWithUndo()
             Column *xCol = nullptr;
             Column *yCol = nullptr;
             dc->resolveColumns(xCol, yCol);
-            const bool hasY = (yCol && !yCol->maskedIntervals().isEmpty());
-            bool hasXInCurve = false;
-            if (xCol && xCol != yCol && !xCol->maskedIntervals().isEmpty()) {
+            // DataCurve::clearMasks() clears the curve's own rows only (X and Y alike)
+            const bool yHasMasks = (yCol && !yCol->maskedIntervals().isEmpty());
+            const bool xHasMasks = (xCol && xCol != yCol && !xCol->maskedIntervals().isEmpty());
+            bool hasMaskInCurve = false;
+            if (yHasMasks || xHasMasks) {
                 const int n = dc->dataSize();
-                for (int pt = 0; pt < n; ++pt) {
+                for (int pt = 0; pt < n && !hasMaskInCurve; ++pt) {
                     const int row = dc->tableRow(pt);
-                    if (row >= 0 && xCol->isMasked(row)) {
-                        hasXInCurve = true;
-                        break;
-                    }
+                    if (row >= 0
+                        && ((yHasMasks && yCol->isMasked(row))
+                            || (xHasMasks && xCol->isMasked(row))))
+                        hasMaskInCurve = true;
                 }
             }
-            if (hasY || hasXInCurve) {
+            if (hasMaskInCurve) {
                 targetCurves.append(dc);
                 ++clearedCurves;
             }

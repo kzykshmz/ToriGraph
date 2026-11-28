@@ -396,6 +396,7 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
                    "79d: journal_2col_175mm canvas was squashed instead of keeping ~2:1 landscape aspect (ratio="
                            << ratio2Col << ")!");
 
+#ifdef Q_OS_WIN // PowerPoint export draws the graphs as EMF (Windows GDI)
         ToriGraphPptx::DeckOptions opt;
         opt.perSlide = 2;
         opt.perGraphPresetScale = true;
@@ -417,6 +418,7 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
                 ToriGraphPptx::exportGraphs(w79, QList<MyWidget *>() << mlLab, opt, pptxBad);
         CHECK_COND(!resBad.ok && !resBad.error.isEmpty(),
                    "79d: PptxExport to unwritable path did not fail cleanly");
+#endif
 
         // 2-pass Graph::copy with ErrorBars (ASan verifies UAF freedom)
         Graph *gErr = mlLab->activeGraph();

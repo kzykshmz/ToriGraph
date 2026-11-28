@@ -26,6 +26,7 @@
  *   Boston, MA  02110-1301  USA                                           *
  *                                                                         *
  ***************************************************************************/
+#include <algorithm>
 #include <QVector>
 #include <QWidgetList>
 #include <QPrinter>
@@ -868,8 +869,19 @@ void MultiLayer::setRows(int r)
         rows = r;
 }
 
+// Layout values come from project files and scripts; the layout arithmetic (sums of margins,
+// gaps and canvas sizes in int) must not overflow on a damaged value such as -2147483648.
+static int clampLayoutPx(int v, int lo = 0, int hi = 100000)
+{
+    return std::clamp(v, lo, hi);
+}
+
 void MultiLayer::setMargins(int lm, int rm, int tm, int bm)
 {
+    lm = clampLayoutPx(lm);
+    rm = clampLayoutPx(rm);
+    tm = clampLayoutPx(tm);
+    bm = clampLayoutPx(bm);
     if (left_margin != lm)
         left_margin = lm;
     if (right_margin != rm)
@@ -882,6 +894,8 @@ void MultiLayer::setMargins(int lm, int rm, int tm, int bm)
 
 void MultiLayer::setSpacing(int rgap, int cgap)
 {
+    rgap = clampLayoutPx(rgap);
+    cgap = clampLayoutPx(cgap);
     if (rowsSpace != rgap)
         rowsSpace = rgap;
     if (colsSpace != cgap)
@@ -890,6 +904,8 @@ void MultiLayer::setSpacing(int rgap, int cgap)
 
 void MultiLayer::setLayerCanvasSize(int w, int h)
 {
+    w = clampLayoutPx(w);
+    h = clampLayoutPx(h);
     if (l_canvas_width != w)
         l_canvas_width = w;
     if (l_canvas_height != h)

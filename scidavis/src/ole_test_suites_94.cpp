@@ -754,10 +754,12 @@ int runSuite94RpcWorksheetDataFidelity(ApplicationWindow *mw)
         CHECK_COND(t != nullptr, "94i: T94N missing");
         const QByteArray prevTmp = qgetenv("TMP");
         const QByteArray prevTemp = qgetenv("TEMP");
+        const QByteArray prevTmpDir = qgetenv("TMPDIR"); // QDir::tempPath() on Unix
         const QString badTemp = QDir(QDir::tempPath())
                                         .filePath(QStringLiteral("tg94_missing_dir/sub"));
         qputenv("TMP", QDir::toNativeSeparators(badTemp).toLocal8Bit());
         qputenv("TEMP", QDir::toNativeSeparators(badTemp).toLocal8Bit());
+        qputenv("TMPDIR", QDir::toNativeSeparators(badTemp).toLocal8Bit());
         const bool tempRedirected = QDir::cleanPath(QDir::tempPath()) == QDir::cleanPath(badTemp);
         const QJsonArray cmds{
             QJsonObject{ { "method", "table.set_cell" },
@@ -777,6 +779,15 @@ int runSuite94RpcWorksheetDataFidelity(ApplicationWindow *mw)
         };
         restoreEnv("TMP", prevTmp);
         restoreEnv("TEMP", prevTemp);
+        restoreEnv("TMPDIR", prevTmpDir);
+#ifndef Q_OS_WIN
+        // Unix Qt resolves TMPDIR with canonicalPath(), so a missing folder cannot be made the
+        // temp folder there: the failure path this check needs cannot be produced.
+        if (!tempRedirected) {
+            std::cout << "[INFO] 94i skipped: TMPDIR cannot point at a missing folder on this platform\n";
+        } else
+#endif
+        {
         CHECK_COND(tempRedirected, "94i: could not point the temp folder at a missing directory ("
                                            << QDir::tempPath().toStdString() << ")");
         CHECK_COND(!r.value("rolled_back").toBool(true)
@@ -786,6 +797,7 @@ int runSuite94RpcWorksheetDataFidelity(ApplicationWindow *mw)
                    "94i: failed rollback (workspace untouched) reported undo_history_cleared");
         CHECK_COND(w94->table(QStringLiteral("T94N")) == t && t->cell(0, 0) == 777.0,
                    "94i: the workspace was rebuilt although the rollback failed early");
+        }
     }
 
     w94.reset();
