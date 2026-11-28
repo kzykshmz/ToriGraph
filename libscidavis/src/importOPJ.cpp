@@ -221,8 +221,13 @@ bool ImportOPJ::createProjectTree(const OriginFile &opj)
     const tree<Origin::ProjectNode> *projectTree = opj.project();
     if (!projectTree || projectTree->empty() || !projectTree->begin().node)
         return false;
+    // A truncated file can leave the top node without children: begin(top) is then the
+    // end sibling iterator, and converting that to a pre-order iterator lands on the tree's
+    // "feet" sentinel, whose ProjectNode is never constructed (root->name read garbage).
+    if (projectTree->number_of_children(projectTree->begin()) == 0)
+        return false;
     tree<Origin::ProjectNode>::iterator root = projectTree->begin(projectTree->begin());
-    if (!root.node)
+    if (!root.node || root == projectTree->end())
         return false;
     Folder *baseFolder = mw->currentFolder() ? mw->currentFolder() : mw->projectFolder();
     if (!baseFolder)
